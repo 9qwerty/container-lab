@@ -2,7 +2,21 @@
 
 set -euo pipefail
 
-NAME="${1:-docker}"
+NAME="docker"
+HOSTNAME="docker"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --hostname)
+            HOSTNAME="${2:?--hostname requires a value}"
+            shift 2
+            ;;
+        *)
+            NAME="$1"
+            shift
+            ;;
+    esac
+done
 
 CHROOT_DIR="$HOME/chroot/$NAME"
 
@@ -64,6 +78,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-sudo unshare --mount --pid --fork \
+sudo unshare \
+    --mount \
+    --pid \
+    --fork \
+    --uts \
+    --ipc \
     --mount-proc="$CHROOT_DIR/proc" \
-    chroot "$CHROOT_DIR" /bin/bash
+    chroot "$CHROOT_DIR" /bin/bash -c "
+        hostname '$HOSTNAME'
+        exec /bin/bash
+    "
