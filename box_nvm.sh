@@ -2,59 +2,25 @@
 
 set -euo pipefail
 
-NAME="box-nvm"
-HOSTNAME="nvm"
-NEW=0
+source _variable.sh
+source _generate_alias.sh
+source _lib.sh
 
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --hostname)
-            HOSTNAME="${2:?--hostname requires a value}"
-            shift 2
-            ;;
-        --new)
-            NEW=1
-            shift
-            ;;
-        *)
-            NAME="$1"
-            shift
-            ;;
-    esac
-done
+WORKSPACE="$HOME/chroot/box-nvm"
 
-CHROOT_DIR="$HOME/chroot/$NAME"
+common_cli "$@"
 
-ARCH="$(uname -m)"
+remove_workspace
 
-case "$ARCH" in
-    x86_64)
-        ROOTFS_ARCH="amd64"
-        ;;
-    aarch64|arm64)
-        ROOTFS_ARCH="arm64"
-        ;;
-    *)
-        echo "Unsupported architecture: $ARCH"
-        exit 1
-        ;;
-esac
+echo "Name: $NAME"
+echo "Creating chroot at $WORKSPACE/$NAME ..."
+
+CHROOT_DIR="$WORKSPACE/$NAME"
+
+arch_detect
 
 ROOTFS_URL="https://partner-images.canonical.com/oci/jammy/current/ubuntu-jammy-oci-${ROOTFS_ARCH}-root.tar.gz"
 ROOTFS_FILE="ubuntu-jammy-oci-${ROOTFS_ARCH}-root.tar.gz"
-
-echo "Architecture : $ARCH"
-echo "Rootfs       : $ROOTFS_ARCH"
-echo "Hostname     : $HOSTNAME"
-
-if [[ "$NEW" -eq 1 ]]; then
-    echo "Removing existing chroot at $CHROOT_DIR ..."
-    sudo umount -l "$CHROOT_DIR/proc"    2>/dev/null || true
-    sudo umount -l "$CHROOT_DIR/sys"     2>/dev/null || true
-    sudo umount -l "$CHROOT_DIR/dev/pts" 2>/dev/null || true
-    sudo umount -l "$CHROOT_DIR/dev"     2>/dev/null || true
-    sudo rm -rf "$CHROOT_DIR"
-fi
 
 sudo mkdir -p "$CHROOT_DIR"
 
@@ -78,13 +44,22 @@ sudo mount --bind /sys "$CHROOT_DIR/sys"
 sudo mount -t proc proc "$CHROOT_DIR/proc"
 
 cleanup() {
+    echo "Cleaning up ..."
+    echo "Removing existing chroot at $CHROOT_DIR ..."
+    sudo rm -rf "$CHROOT_DIR"
+}
+
+cleanup_exit() {
     echo "Cleaning up mounts..."
     sudo umount -l "$CHROOT_DIR/proc"     2>/dev/null || true
     sudo umount -l "$CHROOT_DIR/sys"      2>/dev/null || true
     sudo umount -l "$CHROOT_DIR/dev/pts"  2>/dev/null || true
     sudo umount -l "$CHROOT_DIR/dev"      2>/dev/null || true
+    if [[ "$CLEANUP" -eq 1 ]]; then
+        cleanup
+    fi
 }
-trap cleanup EXIT
+trap cleanup_exit EXIT
 
 if [[ ! -x "$CHROOT_DIR/bin/bash" ]]; then
     echo "Root filesystem not found."
