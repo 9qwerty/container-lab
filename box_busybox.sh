@@ -2,23 +2,31 @@
 
 set -euo pipefail
 
-NAME="busybox"
-HOSTNAME="mycontainer"
+source _variable.sh
+source _generate_alias.sh
+source _lib.sh
 
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --hostname)
-            HOSTNAME="${2:?--hostname requires a value}"
-            shift 2
-            ;;
-        *)
-            NAME="$1"
-            shift
-            ;;
-    esac
-done
+WORKSPACE="$HOME/chroot/busybox"
 
-CHROOT_DIR="$HOME/chroot/$NAME"
+common_cli "$@"
+
+remove_workspace
+
+echo "Name: $NAME"
+echo "Creating chroot at $WORKSPACE/$NAME ..."
+
+CHROOT_DIR="$WORKSPACE/$NAME"
+
+cleanup() {
+    echo "Cleaning up ..."
+    echo "Removing existing chroot at $CHROOT_DIR ..."
+    sudo rm -rf "$CHROOT_DIR"
+}
+
+if [[ "$CLEANUP" -eq 1 ]]; then
+    trap cleanup EXIT
+fi
+
 BUSYBOX="$(command -v busybox)"
 
 mkdir -p \
