@@ -58,7 +58,6 @@ sudo chmod 1777 "$CHROOT_DIR/tmp"
 sudo mount --bind /dev "$CHROOT_DIR/dev"
 sudo mount --bind /dev/pts "$CHROOT_DIR/dev/pts"
 sudo mount --bind /sys "$CHROOT_DIR/sys"
-sudo mount -t proc proc "$CHROOT_DIR/proc"
 
 cleanup() {
     echo "Cleaning up ..."
@@ -68,7 +67,6 @@ cleanup() {
 
 cleanup_exit() {
     echo "Cleaning up mounts..."
-    sudo umount -l "$CHROOT_DIR/proc"     2>/dev/null || true
     sudo umount -l "$CHROOT_DIR/sys"      2>/dev/null || true
     sudo umount -l "$CHROOT_DIR/dev/pts"  2>/dev/null || true
     sudo umount -l "$CHROOT_DIR/dev"      2>/dev/null || true
@@ -84,6 +82,7 @@ sudo unshare \
     --fork \
     --uts \
     --ipc \
+    --mount-proc="$CHROOT_DIR/proc" \
     chroot "$CHROOT_DIR" /bin/bash -c "
         hostname '$HOSTNAME'
         exec /bin/bash

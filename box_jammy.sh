@@ -73,7 +73,6 @@ sudo mount -t tmpfs tmpfs "$CHROOT_DIR/dev/shm"
 # /sys ยัง bind ได้ตามปกติ (อ่านอย่างเดียวเป็นส่วนใหญ่ ความเสี่ยงต่ำกว่า /dev มาก)
 sudo mount --bind /sys "$CHROOT_DIR/sys"
 sudo mount -o remount,ro,bind "$CHROOT_DIR/sys"
-sudo mount -t proc proc "$CHROOT_DIR/proc"
 
 cleanup() {
     echo "Cleaning up ..."
@@ -82,7 +81,6 @@ cleanup() {
 }
 
 cleanup_exit() {
-    sudo umount -l "$CHROOT_DIR/proc"     2>/dev/null || true
     sudo umount -l "$CHROOT_DIR/sys"      2>/dev/null || true
     sudo umount -l "$CHROOT_DIR/dev/shm"  2>/dev/null || true
     sudo umount -l "$CHROOT_DIR/dev/pts"  2>/dev/null || true
@@ -99,6 +97,7 @@ sudo unshare \
     --fork \
     --uts \
     --ipc \
+    --mount-proc="$CHROOT_DIR/proc" \
     chroot "$CHROOT_DIR" /bin/bash -c "
         hostname '$HOSTNAME'
         exec /bin/bash

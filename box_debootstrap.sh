@@ -73,6 +73,7 @@ sudo unshare \
     --fork \
     --uts \
     --ipc \
+    --mount-proc="$CHROOT_DIR/proc" \
     chroot "$CHROOT_DIR" /bin/bash -c "
         hostname -F /etc/hostname
         exec /bin/bash
