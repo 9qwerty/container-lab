@@ -52,17 +52,17 @@ fi
 
 OUT_IF=$(ip route get 8.8.8.8 | awk '{print $5; exit}')
 
-NETNS="box-net"
+NETNS="box-net-$NAME"
+IDX=$(( ($(cksum <<< "$NAME" | cut -d' ' -f1) % 250) + 2 ))
+VETH_HOST="veth-${IDX}"
+VETH_NS="ceth-${IDX}-ns"
+BRIDGE="box0"
+SUBNET="10.200.${IDX}"
+BR_IP="${SUBNET}.1"
+NS_IP="${SUBNET}.2"
 
 setup_ns() {
     echo "Setting up netns $NETNS ..."
-    IDX=1
-    VETH_HOST="veth-${IDX}"
-    VETH_NS="ceth-${IDX}-ns"
-    BRIDGE="box0"
-    SUBNET="10.200.${IDX}"
-    BR_IP="${SUBNET}.1"
-    NS_IP="${SUBNET}.2"
 
     sudo ip link del "$VETH_HOST" 2>/dev/null || true
 
@@ -74,9 +74,12 @@ setup_ns() {
     # สร้าง bridge บน host ถ้ายังไม่มี
     if ! ip link show "$BRIDGE" &>/dev/null; then
         sudo ip link add "$BRIDGE" type bridge
-        sudo ip addr add "${BR_IP}/24" dev "$BRIDGE"
+        # sudo ip addr add "${BR_IP}/24" dev "$BRIDGE"
         sudo ip link set "$BRIDGE" up
     fi
+
+    # เติม IP ของ subnet ตัวเองเสมอ ไม่ว่า bridge จะมีอยู่แล้วหรือไม่
+    sudo ip addr add "${BR_IP}/24" dev "$BRIDGE" 2>/dev/null || true
 
     # สร้าง veth pair
     sudo ip link add "$VETH_HOST" type veth peer name "$VETH_NS"
@@ -93,19 +96,31 @@ setup_ns() {
     sudo ip netns exec "$NETNS" ip route add default via "$BR_IP"
 
     sudo sysctl -w net.ipv4.ip_forward=1
-    sudo iptables -t nat -A POSTROUTING -s "${SUBNET}.0/24" -o "$OUT_IF" -j MASQUERADE
-    sudo iptables -A FORWARD -i "$BRIDGE" -o "$OUT_IF" -j ACCEPT
-    sudo iptables -A FORWARD -i "$OUT_IF" -o "$BRIDGE" -m state --state RELATED,ESTABLISHED -j ACCEPT
+    # sudo iptables -t nat -A POSTROUTING -s "${SUBNET}.0/24" -o "$OUT_IF" -j MASQUERADE
+    # sudo iptables -A FORWARD -i "$BRIDGE" -o "$OUT_IF" -j ACCEPT
+    # sudo iptables -A FORWARD -i "$OUT_IF" -o "$BRIDGE" -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+    sudo iptables -t nat -C POSTROUTING -s "${SUBNET}.0/24" -o "$OUT_IF" -j MASQUERADE 2>/dev/null \
+      || sudo iptables -t nat -A POSTROUTING -s "${SUBNET}.0/24" -o "$OUT_IF" -j MASQUERADE
+    sudo iptables -C FORWARD -i "$BRIDGE" -o "$OUT_IF" -j ACCEPT 2>/dev/null \
+    || sudo iptables -A FORWARD -i "$BRIDGE" -o "$OUT_IF" -j ACCEPT
+    sudo iptables -C FORWARD -i "$OUT_IF" -o "$BRIDGE" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null \
+    || sudo iptables -A FORWARD -i "$OUT_IF" -o "$BRIDGE" -m state --state RELATED,ESTABLISHED -j ACCEPT
 }
 setup_ns
 
 cleanup_ns() {
-    echo "Cleaning up namespace PID $NETNS ..."
+    echo "Cleaning up namespace $NETNS ..."
     sudo ip link del "$VETH_HOST" 2>/dev/null || true
     sudo ip netns del "$NETNS" 2>/dev/null || true
     sudo iptables -t nat -D POSTROUTING -s "${SUBNET}.0/24" -o "$OUT_IF" -j MASQUERADE 2>/dev/null || true
-    sudo iptables -D FORWARD -i "$BRIDGE" -o "$OUT_IF" -j ACCEPT 2>/dev/null || true
-    sudo iptables -D FORWARD -i "$OUT_IF" -o "$BRIDGE" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+    sudo ip addr del "${BR_IP}/24" dev "$BRIDGE" 2>/dev/null || true
+    if ! sudo ip netns list | grep -q '^box-net-'; then
+        sudo iptables -D FORWARD -i "$BRIDGE" -o "$OUT_IF" -j ACCEPT 2>/dev/null || true
+        sudo iptables -D FORWARD -i "$OUT_IF" -o "$BRIDGE" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+
+        sudo ip link del "$BRIDGE" 2>/dev/null || true
+    fi
 }
 
 # --------------------------------------------------
