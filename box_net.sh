@@ -51,33 +51,11 @@ fi
 # --------------------------------------------------
 
 OUT_IF=$(ip route get 8.8.8.8 | awk '{print $5; exit}')
-sudo unshare \
-    --mount \
-    --pid \
-    --fork \
-    --uts \
-    --ipc \
-    --net \
-    --mount-proc="$CHROOT_DIR/proc" \
-    sleep infinity &
-sleep 0.2
-NS_PID=$!
-for i in $(seq 1 50); do
-    [[ -e "/proc/$NS_PID/ns/net" ]] && break
-    sleep 0.05
-done
 
-cleanup_ns() {
-    echo "Cleaning up namespace PID $NS_PID ..."
-    sudo kill "$NS_PID" 2>/dev/null || true
-    sudo ip link del "$VETH_HOST" 2>/dev/null || true
-    sudo iptables -t nat -D POSTROUTING -s "${SUBNET}.0/24" -o "$OUT_IF" -j MASQUERADE 2>/dev/null || true
-    sudo iptables -D FORWARD -i "$BRIDGE" -o "$OUT_IF" -j ACCEPT 2>/dev/null || true
-    sudo iptables -D FORWARD -i "$OUT_IF" -o "$BRIDGE" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
-}
+NETNS="box-net"
 
 setup_ns() {
-    echo "Setting up namespace PID $NS_PID ..."
+    echo "Setting up netns $NETNS ..."
     IDX=1
     VETH_HOST="veth-${IDX}"
     VETH_NS="ceth-${IDX}-ns"
@@ -86,11 +64,18 @@ setup_ns() {
     BR_IP="${SUBNET}.1"
     NS_IP="${SUBNET}.2"
 
-    # สร้าง bridge บน host ถ้ายังไม่มี (ทำครั้งเดียว ใช้ร่วมกันได้ทุก chroot)
+    sudo ip link del "$VETH_HOST" 2>/dev/null || true
+
+    # สร้าง netns ถ้ายังไม่มี (idempotent)
+    if ! sudo ip netns list | grep -qw "$NETNS"; then
+        sudo ip netns add "$NETNS"
+    fi
+
+    # สร้าง bridge บน host ถ้ายังไม่มี
     if ! ip link show "$BRIDGE" &>/dev/null; then
-    sudo ip link add "$BRIDGE" type bridge
-    sudo ip addr add "${BR_IP}/24" dev "$BRIDGE"
-    sudo ip link set "$BRIDGE" up
+        sudo ip link add "$BRIDGE" type bridge
+        sudo ip addr add "${BR_IP}/24" dev "$BRIDGE"
+        sudo ip link set "$BRIDGE" up
     fi
 
     # สร้าง veth pair
@@ -98,16 +83,30 @@ setup_ns() {
     sudo ip link set "$VETH_HOST" master "$BRIDGE"
     sudo ip link set "$VETH_HOST" up
 
-    # ย้ายหัวอีกฝั่ง (ceth1) เข้าไปอยู่ใน net namespace ของ NS_PID
-    sudo ip link set "$VETH_NS" netns "$NS_PID"
+    # ย้ายปลาย ceth เข้า netns โดยตรง ไม่ต้องผ่าน PID
+    sudo ip link set "$VETH_NS" netns "$NETNS"
+
+    # ตั้ง IP/route ฝั่งใน netns (ตรงนี้ script เดิมไม่ได้ทำ ลองเช็คดูว่าตั้งใจไหม)
+    sudo ip netns exec "$NETNS" ip addr add "${NS_IP}/24" dev "$VETH_NS"
+    sudo ip netns exec "$NETNS" ip link set "$VETH_NS" up
+    sudo ip netns exec "$NETNS" ip link set lo up
+    sudo ip netns exec "$NETNS" ip route add default via "$BR_IP"
 
     sudo sysctl -w net.ipv4.ip_forward=1
-
     sudo iptables -t nat -A POSTROUTING -s "${SUBNET}.0/24" -o "$OUT_IF" -j MASQUERADE
     sudo iptables -A FORWARD -i "$BRIDGE" -o "$OUT_IF" -j ACCEPT
     sudo iptables -A FORWARD -i "$OUT_IF" -o "$BRIDGE" -m state --state RELATED,ESTABLISHED -j ACCEPT
 }
 setup_ns
+
+cleanup_ns() {
+    echo "Cleaning up namespace PID $NETNS ..."
+    sudo ip link del "$VETH_HOST" 2>/dev/null || true
+    sudo ip netns del "$NETNS" 2>/dev/null || true
+    sudo iptables -t nat -D POSTROUTING -s "${SUBNET}.0/24" -o "$OUT_IF" -j MASQUERADE 2>/dev/null || true
+    sudo iptables -D FORWARD -i "$BRIDGE" -o "$OUT_IF" -j ACCEPT 2>/dev/null || true
+    sudo iptables -D FORWARD -i "$OUT_IF" -o "$BRIDGE" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+}
 
 # --------------------------------------------------
 # Container setup
@@ -154,22 +153,21 @@ cleanup_exit() {
     sudo umount -l "$CHROOT_DIR/dev/pts"  2>/dev/null || true
     sudo rm -f "$CHROOT_DIR"/dev/{null,zero,full,random,urandom,tty}
 
-    cleanup_ns
-
     if [[ "$CLEANUP" -eq 1 ]]; then
         cleanup
     fi
+    cleanup_ns
 }
 trap cleanup_exit EXIT
 
-sudo nsenter \
-    -t "$NS_PID" \
-    --net \
-    --mount \
-    --pid \
-    --uts \
-    --ipc \
+sudo ip netns exec "$NETNS" \
+    unshare \
+    --mount --pid --fork --uts --ipc \
+    --mount-proc="$CHROOT_DIR/proc" \
     chroot "$CHROOT_DIR" /bin/bash -c "
+        # mount -t proc proc /proc
         hostname '$HOSTNAME'
+        apt update
+        apt-get install -y iproute2 iputils-ping net-tools curl
         exec /bin/bash
     "
