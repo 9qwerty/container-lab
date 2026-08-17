@@ -145,6 +145,11 @@ setup_ns() {
     sudo sysctl -w net.ipv4.conf.lo.route_localnet=1
     sudo sysctl -w net.ipv4.conf.${BRIDGE}.route_localnet=1
 
+    # rp filter
+    # sudo sysctl -w net.ipv4.conf.all.rp_filter=2
+    # sudo sysctl -w net.ipv4.conf.lo.rp_filter=2
+    # sudo sysctl -w net.ipv4.conf.${BRIDGE}.rp_filter=2
+
     # sudo iptables -t nat -A POSTROUTING -s "${SUBNET}.0/24" -o "$OUT_IF" -j MASQUERADE
     # sudo iptables -A FORWARD -i "$BRIDGE" -o "$OUT_IF" -j ACCEPT
     # sudo iptables -A FORWARD -i "$OUT_IF" -o "$BRIDGE" -m state --state RELATED,ESTABLISHED -j ACCEPT
@@ -157,53 +162,61 @@ setup_ns() {
     || sudo iptables -A FORWARD -i "$OUT_IF" -o "$BRIDGE" -m state --state RELATED,ESTABLISHED -j ACCEPT
 
     # EXPOSED PORTS
-    HOST_PORT=8080
-    CONTAINER_PORT=80
+    for mapping in "${PORTS[@]}"; do
+        parse_port_mapping "$mapping"
 
-    # External traffic -> container
-    sudo iptables -t nat -C PREROUTING \
-        -p tcp \
-        -i "$OUT_IF" \
-        --dport "$HOST_PORT" \
-        -j DNAT \
-        --to-destination "${NS_IP}:${CONTAINER_PORT}" \
-        2>/dev/null \
-    || sudo iptables -t nat -A PREROUTING \
-        -p tcp \
-        -i "$OUT_IF" \
-        --dport "$HOST_PORT" \
-        -j DNAT \
-        --to-destination "${NS_IP}:${CONTAINER_PORT}"
+        if ! validate_port_available "$HOST_PORT"; then
+            echo "Aborting: port conflict detected for $mapping" >&2
+            exit 1
+        fi
 
-    # Internal traffic -> container
-    sudo iptables -t nat -C OUTPUT \
-        -p tcp \
-        -d 127.0.0.1 \
-        --dport "$HOST_PORT" \
-        -j DNAT \
-        --to-destination "${NS_IP}:${CONTAINER_PORT}" \
-        2>/dev/null \
-    || sudo iptables -t nat -A OUTPUT \
-        -p tcp \
-        -d 127.0.0.1 \
-        --dport "$HOST_PORT" \
-        -j DNAT \
-        --to-destination "${NS_IP}:${CONTAINER_PORT}"
+        echo "Exposing port: $HOST_PORT -> $CONTAINER_PORT"
 
-    # Internal traffic -> container
-    sudo iptables -C FORWARD \
-        -p tcp \
-        -d "$NS_IP" \
-        --dport 80 \
-        -j ACCEPT \
-        2>/dev/null \
-    || sudo iptables -A FORWARD \
-        -p tcp \
-        -d "$NS_IP" \
-        --dport 80 \
-        -j ACCEPT
+        # External traffic -> container (PREROUTING, table nat)
+        sudo iptables -t nat -C PREROUTING \
+            -p tcp \
+            -i "$OUT_IF" \
+            --dport "$HOST_PORT" \
+            -j DNAT \
+            --to-destination "${NS_IP}:${CONTAINER_PORT}" \
+            2>/dev/null \
+        || sudo iptables -t nat -A PREROUTING \
+            -p tcp \
+            -i "$OUT_IF" \
+            --dport "$HOST_PORT" \
+            -j DNAT \
+            --to-destination "${NS_IP}:${CONTAINER_PORT}"
 
-    # Internal traffic -> external
+        # Internal traffic -> container (OUTPUT, table nat)
+        sudo iptables -t nat -C OUTPUT \
+            -p tcp \
+            -d 127.0.0.1 \
+            --dport "$HOST_PORT" \
+            -j DNAT \
+            --to-destination "${NS_IP}:${CONTAINER_PORT}" \
+            2>/dev/null \
+        || sudo iptables -t nat -A OUTPUT \
+            -p tcp \
+            -d 127.0.0.1 \
+            --dport "$HOST_PORT" \
+            -j DNAT \
+            --to-destination "${NS_IP}:${CONTAINER_PORT}"
+
+        # Internal traffic -> container (FORWARD, table filter)
+        sudo iptables -C FORWARD \
+            -p tcp \
+            -d "$NS_IP" \
+            --dport "$CONTAINER_PORT" \
+            -j ACCEPT \
+            2>/dev/null \
+        || sudo iptables -A FORWARD \
+            -p tcp \
+            -d "$NS_IP" \
+            --dport "$CONTAINER_PORT" \
+            -j ACCEPT
+    done
+
+    # Internal traffic -> external (POSTROUTING, table nat)
     sudo iptables -t nat -C POSTROUTING \
         -o "$BRIDGE" \
         -m addrtype --src-type LOCAL \
@@ -223,6 +236,13 @@ cleanup_ns() {
     sudo ip link del "$VETH_HOST" 2>/dev/null || true
     sudo ip netns del "$NETNS" 2>/dev/null || true
     sudo iptables -t nat -D POSTROUTING -s "${SUBNET}.0/24" -o "$OUT_IF" -j MASQUERADE 2>/dev/null || true
+    for mapping in "${PORTS[@]}"; do
+        parse_port_mapping "$mapping"
+        sudo iptables -t nat -D PREROUTING -p tcp -i "$OUT_IF" --dport "$HOST_PORT" -j DNAT --to-destination "${NS_IP}:${CONTAINER_PORT}" 2>/dev/null || true
+        sudo iptables -t nat -D OUTPUT -p tcp -d 127.0.0.1 --dport "$HOST_PORT" -j DNAT --to-destination "${NS_IP}:${CONTAINER_PORT}" 2>/dev/null || true
+        sudo iptables -D FORWARD -p tcp -d "$NS_IP" --dport "$CONTAINER_PORT" -j ACCEPT 2>/dev/null || true
+    done
+    sudo iptables -t nat -D POSTROUTING -o "$BRIDGE" -m addrtype --src-type LOCAL -m addrtype --dst-type UNICAST -j MASQUERADE 2>/dev/null || true
     sudo ip addr del "${BR_IP}/24" dev "$BRIDGE" 2>/dev/null || true
     if ! sudo ip netns list | grep -q '^box-net-'; then
         sudo iptables -D FORWARD -i "$BRIDGE" -o "$OUT_IF" -j ACCEPT 2>/dev/null || true

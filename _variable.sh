@@ -5,3 +5,6 @@ NAME=""
 HOSTNAME=""
 CLEANUP=0
 REMOVE=0
+
+# Options
+PORTS=()
