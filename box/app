@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+
+USERHOME=$(eval echo ~$USER)
+
+help() {
+    echo "Usage: $0 <command>"
+    echo
+    echo "Commands:"
+    echo "  dev                     Run gobox in development mode"
+    echo "  build                   Build the gobox binary"
+    echo "  run                     Run the gobox binary"
+    echo "  -h, --help              Show this help message"
+    echo
+    echo "Examples:"
+    echo "  $0 dev"
+    echo "  $0 build"
+    echo "  $0 run"
+}
+
+dev() {
+    sudo env GOBOX_WORKSPACE=$USERHOME/chroot/gobox $(which go) run . "$@"
+}
+
+build() {
+    go build -o dist/gobox .
+    echo "Built gobox to dist/gobox"
+}
+
+run() {
+    build
+    sudo env GOBOX_WORKSPACE=$USERHOME/chroot/gobox dist/gobox "$@"
+}
+
+common_cli() {
+    if [[ $# -eq 0 ]]; then
+        echo "Error: no options provided" >&2
+        help
+        exit 0
+    fi
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                help
+                exit 0
+                ;;
+            dev)
+                shift
+                dev "$@"
+                exit 0
+                ;;
+            build)
+                build
+                exit 0
+                ;;
+            run)
+                shift
+                run "$@"
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: $1" >&2
+                help
+                exit 0
+                ;;
+        esac
+    done
+}
+
+common_cli "$@"

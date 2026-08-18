@@ -1,17 +1,17 @@
-// main.go
+// main
 package main
 
 import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"syscall"
 )
 
 var (
-	rootfsDir = getenv("BOX_ROOTFS", "")
-	cgroupDir = getenv("BOX_CGROUP", "/sys/fs/cgroup/box-mycontainer")
+	cgroupDir = getenv("BOX_CGROUP", "/sys/fs/cgroup/gobox")
 )
 
 func getenv(key, def string) string {
@@ -22,33 +22,47 @@ func getenv(key, def string) string {
 }
 
 func main() {
-	if rootfsDir == "" {
-		fmt.Println("set BOX_ROOTFS env var to point to your rootfs dir")
-		os.Exit(1)
-	}
 	if len(os.Args) < 2 {
-		fmt.Println("usage: mycontainer run|child")
+		help()
+		os.Exit(0)
+	}
+
+	if os.Args[1] == "child" {
+		if len(os.Args) < 4 {
+			fmt.Fprintln(os.Stderr, "child: missing rootfs/hostname args")
+			os.Exit(1)
+		}
+		child(&Config{RootFS: os.Args[2], Hostname: os.Args[3]})
+		return
+	}
+
+	cfg, err := parseCLI(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
 
-	switch os.Args[1] {
+	switch cfg.Command {
+	case "list":
+		must(listWorkspace(cfg))
+	case "rm":
+		must(removeWorkspace(cfg.Name, cfg))
 	case "run":
-		run()
-	case "child":
-		child()
-	default:
-		fmt.Println("unknown command:", os.Args[1])
-		os.Exit(1)
+		runContainer(cfg) // ฟังก์ชัน runContainer() เดิมที่คุยกันก่อนหน้า รับ cfg เข้าไปแทน global var
 	}
 }
 
 // ---------------------------------------------------------
 // run: ทำงานบน host ปกติ - สร้าง namespace ใหม่ + cgroup แล้ว re-exec ตัวเอง
 // ---------------------------------------------------------
-func run() {
+func runContainer(cfg *Config) {
+	arch, errArch := detectArch()
+	must(errArch)
+	must(setupRootfs(arch, cfg))
+
 	must(setupCgroupSkeleton())
 
-	cmd := exec.Command("/proc/self/exe", "child")
+	cmd := exec.Command("/proc/self/exe", "child", cfg.RootFS, cfg.Hostname)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -75,18 +89,84 @@ func run() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "child exited:", err)
 	}
+
+	if cfg.Cleanup {
+		fmt.Println("Cleaning up...")
+		if rmErr := removeWorkspace(cfg.Name, cfg); rmErr != nil {
+			fmt.Fprintln(os.Stderr, "cleanup:", rmErr)
+		}
+		fmt.Println("Cleaned up.")
+	}
+}
+
+func setupResolvConf(rootfsDir string) error {
+	resolvPath := filepath.Join(rootfsDir, "etc", "resolv.conf")
+
+	content := "nameserver 8.8.8.8\nnameserver 1.1.1.1\n"
+
+	if err := os.MkdirAll(filepath.Dir(resolvPath), 0755); err != nil {
+		return fmt.Errorf("mkdir /etc: %w", err)
+	}
+
+	return os.WriteFile(resolvPath, []byte(content), 0644)
+}
+
+func setupHostsFile(rootfsDir, hostname string) error {
+	hostsPath := filepath.Join(rootfsDir, "etc", "hosts")
+	line := fmt.Sprintf("127.0.0.1 %s\n", hostname)
+
+	f, err := os.OpenFile(hostsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = f.WriteString(line)
+	return err
+}
+
+func setupRootfs(arch string, cfg *Config) error {
+	url := fmt.Sprintf(
+		"https://partner-images.canonical.com/oci/jammy/current/ubuntu-jammy-oci-%s-root.tar.gz",
+		arch,
+	)
+	archiveFile := fmt.Sprintf("ubuntu-jammy-oci-%s-root.tar.gz", arch)
+
+	// ถ้ามี /bin/bash อยู่แล้วใน rootfs ข้ามทั้งหมด (idempotent เหมือน script เดิม)
+	if _, err := os.Stat(filepath.Join(cfg.RootFS, "bin", "bash")); err == nil {
+		fmt.Println("Root filesystem already exists, skipping download/extract.")
+		return nil
+	}
+
+	if err := downloadFile(url, archiveFile); err != nil {
+		return fmt.Errorf("download : %w", err)
+	}
+	if err := extractTarGz(archiveFile, cfg.RootFS); err != nil {
+		return fmt.Errorf("extract : %w", err)
+	}
+	if err := setupResolvConf(cfg.RootFS); err != nil {
+		return fmt.Errorf("setup resolv.conf : %w", err)
+	}
+	if err := setupHostsFile(cfg.RootFS, cfg.Hostname); err != nil {
+		return fmt.Errorf("setup hosts : %w", err)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------
 // child: รันอยู่ข้างในแล้ว หลังจาก clone ด้วย namespace flags ข้างบน
 // ---------------------------------------------------------
-func child() {
+func childMount(cfg *Config) {
 	fmt.Printf("[child] pid=%d entering container...\n", os.Getpid())
 
-	must(syscall.Sethostname([]byte("mycontainer")))
+	must(syscall.Sethostname([]byte(cfg.Hostname)))
+
+	// devTarget := filepath.Join(cfg.RootFS, "dev")
+	// must(os.MkdirAll(devTarget, 0755))
+	// must(syscall.Mount("/dev", devTarget, "", syscall.MS_BIND|syscall.MS_REC, ""))
 
 	// chroot เข้า rootfs
-	must(syscall.Chroot(rootfsDir))
+	must(syscall.Chroot(cfg.RootFS))
 	must(os.Chdir("/"))
 
 	// mount proc ใหม่ (จำเป็นเพราะอยู่ใน PID namespace ใหม่ที่ยังไม่มี /proc เป็นของตัวเอง)
@@ -96,8 +176,10 @@ func child() {
 	// mount /dev/pts, /dev/shm แบบขั้นต่ำ (ถ้ายังไม่ทำใน rootfs)
 	os.MkdirAll("/dev/pts", 0755)
 	os.MkdirAll("/dev/shm", 0755)
+	os.MkdirAll("/tmp", 01777)
 	syscall.Mount("devpts", "/dev/pts", "devpts", 0, "newinstance,ptmxmode=0666")
 	syscall.Mount("tmpfs", "/dev/shm", "tmpfs", 0, "")
+	syscall.Mount("tmpfs", "/tmp", "tmpfs", 0, "mode=1777")
 
 	cmd := exec.Command("/bin/bash")
 	cmd.Stdin = os.Stdin
@@ -109,8 +191,19 @@ func child() {
 		fmt.Fprintln(os.Stderr, "[child] bash exited with error:", err)
 	}
 
+	syscall.Unmount("/tmp", 0)
 	syscall.Unmount("/dev/pts", 0)
 	syscall.Unmount("/dev/shm", 0)
+	// syscall.Unmount("/dev", syscall.MNT_DETACH)
+}
+
+func childMKNOD(cfg *Config) error {
+	return nil
+}
+
+func child(cfg *Config) {
+	childMount(cfg)
+	// childMKNOD(cfg)
 }
 
 // ---------------------------------------------------------
