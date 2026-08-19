@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
-	"time"
 )
 
 func getenv(key, def string) string {
@@ -81,7 +80,14 @@ func runContainer(cfg *Config) {
 	configData, errConfigData := json.Marshal(cfg)
 	must(errConfigData)
 
+	syncR, syncW, errPipe := os.Pipe()
+	must(errPipe)
+
+	nc, errNet := deriveNetConfig(cfg.Name)
+	must(errNet)
+
 	cmd := exec.Command("/proc/self/exe", "child")
+	cmd.ExtraFiles = []*os.File{syncR}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -92,11 +98,13 @@ func runContainer(cfg *Config) {
 		Cloneflags: syscall.CLONE_NEWUTS |
 			syscall.CLONE_NEWPID |
 			syscall.CLONE_NEWNS |
-			syscall.CLONE_NEWIPC,
-		// ไม่ใส่ CLONE_NEWNET / CLONE_NEWUSER ตอนนี้ - เอาแค่เข้า container ได้ก่อน
+			syscall.CLONE_NEWIPC |
+			syscall.CLONE_NEWNET,
+		// syscall.CLONE_NEWUSER,
 	}
 
 	must(cmd.Start())
+	syncR.Close()
 
 	pid := cmd.Process.Pid
 	fmt.Println("child pid:", pid)
@@ -104,12 +112,18 @@ func runContainer(cfg *Config) {
 	// ต้อง add pid เข้า cgroup "หลัง" Start() เพราะเพิ่งมี pid ตอนนี้
 	must(addToCgroup(pid, cgroupDir))
 
+	syncW.Write([]byte{1})
+	syncW.Close()
+
 	memoryMax, errMemoryMax := os.ReadFile(filepath.Join(cgroupDir, "memory.max"))
 	must(errMemoryMax)
 	fmt.Printf("memory.max: %s", string(memoryMax))
 
+	must(setupNetwork(nc, pid))
+
 	// รอ child ทำงานจบ (เช่น bash exit)
 	err := cmd.Wait()
+	cleanupNetwork(nc)
 	cleanupCgroup(cgroupDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "child exited:", err)
@@ -198,6 +212,8 @@ func childMount(cfg *Config) {
 		must(setupDevNodes(filepath.Join(cfg.RootFS, "dev")))
 	}
 
+	lxcfsHandles := setupLxcfs()
+
 	// chroot เข้า rootfs
 	must(syscall.Chroot(cfg.RootFS))
 	must(os.Chdir("/"))
@@ -205,6 +221,8 @@ func childMount(cfg *Config) {
 	// mount proc ใหม่ (จำเป็นเพราะอยู่ใน PID namespace ใหม่ที่ยังไม่มี /proc เป็นของตัวเอง)
 	must(syscall.Mount("proc", "/proc", "proc", 0, ""))
 	defer syscall.Unmount("/proc", 0)
+
+	mountLxcfs(lxcfsHandles)
 
 	// mount /dev/pts, /dev/shm แบบขั้นต่ำ (ถ้ายังไม่ทำใน rootfs)
 	os.MkdirAll("/dev/pts", 0755)
@@ -218,8 +236,6 @@ func childMount(cfg *Config) {
 	if _, err := os.Lstat(ptmx); os.IsNotExist(err) {
 		must(os.Symlink("pts/ptmx", ptmx))
 	}
-
-	time.Sleep(2 * time.Second)
 
 	env := []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "TERM=xterm"}
 
@@ -294,6 +310,7 @@ func childMount(cfg *Config) {
 		fmt.Fprintln(os.Stderr, "[child] bash exited with error:", err)
 	}
 
+	unmountLxcfs()
 	syscall.Unmount("/tmp", syscall.MNT_DETACH)
 	syscall.Unmount("/dev/pts", syscall.MNT_DETACH)
 	syscall.Unmount("/dev/shm", syscall.MNT_DETACH)
@@ -303,18 +320,31 @@ func childMount(cfg *Config) {
 }
 
 func child(cfg *Config) {
+	sync := os.NewFile(3, "sync")
+	buf := make([]byte, 1)
+	sync.Read(buf)
+	sync.Close()
 	childMount(cfg)
 }
 
 // ---------------------------------------------------------
 // cgroup v2 helpers
 // ---------------------------------------------------------
+func enableCpusetController() error {
+	return os.WriteFile("/sys/fs/cgroup/cgroup.subtree_control", []byte("+cpuset"), 0644)
+}
+
 func setupCgroupSkeleton(cgroupDir string) error {
+	if err := enableCpusetController(); err != nil {
+		fmt.Fprintln(os.Stderr, "[cgroup] warn: enable cpuset failed:", err)
+	}
+
 	if err := os.MkdirAll(cgroupDir, 0755); err != nil {
 		return err
 	}
 	limits := map[string]string{
 		"cpu.max":          "50000 100000",
+		"cpuset.cpus":      "0",
 		"memory.max":       "512M",
 		"memory.swap.max":  "0",
 		"pids.max":         "128",
