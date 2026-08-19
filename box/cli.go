@@ -1,3 +1,4 @@
+// cli.go
 package main
 
 import (
@@ -8,20 +9,30 @@ import (
 	"strings"
 )
 
+type DeviceMode int
+
+const (
+	DeviceModeBind DeviceMode = iota
+	DeviceModeMKNOD
+)
+
 type PortMapping struct {
 	HostPort      int
 	ContainerPort int
 }
 
 type Config struct {
-	Workspace string
-	RootFS    string
-	Command   string // "run" | "list" | "rm"
-	Name      string
-	Hostname  string
-	Cleanup   bool // --remove/--rm
-	Remove    bool // สำหรับ command "rm"
-	Ports     []PortMapping
+	Workspace  string
+	RootFS     string
+	CGroupDir  string
+	Command    string // "run" | "list" | "rm"
+	Name       string
+	Hostname   string
+	DeviceMode DeviceMode
+	Cleanup    bool // --remove/--rm
+	Remove     bool // สำหรับ command "rm"
+	Ports      []PortMapping
+	InitApp    bool
 }
 
 func help() {
@@ -38,6 +49,8 @@ Options for 'run':
   --hostname <hostname>   Set the hostname (default: same as name)
   --remove, --rm          Remove the chroot after exiting
   --port, -p <mapping>    Expose port, format HOST:CONTAINER or PORT
+  --mount-mode <mode>     Set the mount mode (default: bind)
+  --init                  Initialize the chroot with an application
 
 Examples:
   gobox run
@@ -70,6 +83,12 @@ func parseCLI(args []string) (*Config, error) {
 	} else {
 		cfg.Workspace = getHomeDir()
 	}
+	// default Config
+	cfg.DeviceMode = DeviceModeBind
+	cfg.Cleanup = false
+	cfg.Remove = false
+	cfg.CGroupDir = "/sys/fs/cgroup/gobox"
+	cfg.InitApp = false
 
 	switch args[0] {
 	case "-h", "--help":
@@ -124,6 +143,21 @@ func parseCLI(args []string) (*Config, error) {
 				cfg.Ports = append(cfg.Ports, pm)
 				i = next
 
+			case "--device-mode":
+				val, next, err := requireValue(args, i, "--device-mode")
+				if err != nil {
+					return nil, err
+				}
+				mode, err := parseDeviceMode(val)
+				if err != nil {
+					return nil, err
+				}
+				cfg.DeviceMode = mode
+				i = next
+			case "--init":
+				cfg.InitApp = true
+				i++
+
 			default:
 				help()
 				return nil, fmt.Errorf("unknown option for run: %s", args[i])
@@ -135,6 +169,7 @@ func parseCLI(args []string) (*Config, error) {
 		} else {
 			cfg.RootFS = filepath.Join(cfg.Workspace, cfg.Name)
 		}
+		cfg.CGroupDir = filepath.Join("/sys/fs/cgroup", cfg.Name)
 
 	case "rm":
 		cfg.Command = "rm"
@@ -248,4 +283,15 @@ func parsePortMapping(mapping string) (PortMapping, error) {
 	}
 
 	return PortMapping{HostPort: hostPort, ContainerPort: containerPort}, nil
+}
+
+func parseDeviceMode(mode string) (DeviceMode, error) {
+	switch mode {
+	case "bind":
+		return DeviceModeBind, nil
+	case "mknod":
+		return DeviceModeMKNOD, nil
+	default:
+		return 0, fmt.Errorf("invalid device mode: %s", mode)
+	}
 }

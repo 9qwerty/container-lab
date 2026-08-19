@@ -1,17 +1,15 @@
-// main
+// main.go
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"syscall"
-)
-
-var (
-	cgroupDir = getenv("BOX_CGROUP", "/sys/fs/cgroup/gobox")
+	"time"
 )
 
 func getenv(key, def string) string {
@@ -27,12 +25,29 @@ func main() {
 		os.Exit(0)
 	}
 
+	/*
+		if os.Args[1] == "child" {
+			if len(os.Args) < 4 {
+				fmt.Fprintln(os.Stderr, "child: missing rootfs/hostname args")
+				os.Exit(1)
+			}
+			child(&Config{RootFS: os.Args[2], Hostname: os.Args[3]})
+			return
+		}
+	*/
+
 	if os.Args[1] == "child" {
-		if len(os.Args) < 4 {
-			fmt.Fprintln(os.Stderr, "child: missing rootfs/hostname args")
+		var cfg Config
+		configData := os.Getenv("CDATA")
+		if configData == "" {
+			fmt.Fprintln(os.Stderr, "child: missing config data")
 			os.Exit(1)
 		}
-		child(&Config{RootFS: os.Args[2], Hostname: os.Args[3]})
+		if err := json.Unmarshal([]byte(configData), &cfg); err != nil {
+			fmt.Fprintln(os.Stderr, "child: invalid config:", err)
+			os.Exit(1)
+		}
+		child(&cfg)
 		return
 	}
 
@@ -56,16 +71,22 @@ func main() {
 // run: ทำงานบน host ปกติ - สร้าง namespace ใหม่ + cgroup แล้ว re-exec ตัวเอง
 // ---------------------------------------------------------
 func runContainer(cfg *Config) {
+	cgroupDir := cfg.CGroupDir
 	arch, errArch := detectArch()
 	must(errArch)
 	must(setupRootfs(arch, cfg))
 
-	must(setupCgroupSkeleton())
+	must(setupCgroupSkeleton(cgroupDir))
 
-	cmd := exec.Command("/proc/self/exe", "child", cfg.RootFS, cfg.Hostname)
+	configData, errConfigData := json.Marshal(cfg)
+	must(errConfigData)
+
+	cmd := exec.Command("/proc/self/exe", "child")
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+
+	cmd.Env = append(os.Environ(), "CDATA="+string(configData))
 
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWUTS |
@@ -81,11 +102,15 @@ func runContainer(cfg *Config) {
 	fmt.Println("child pid:", pid)
 
 	// ต้อง add pid เข้า cgroup "หลัง" Start() เพราะเพิ่งมี pid ตอนนี้
-	must(addToCgroup(pid))
+	must(addToCgroup(pid, cgroupDir))
+
+	memoryMax, errMemoryMax := os.ReadFile(filepath.Join(cgroupDir, "memory.max"))
+	must(errMemoryMax)
+	fmt.Printf("memory.max: %s", string(memoryMax))
 
 	// รอ child ทำงานจบ (เช่น bash exit)
 	err := cmd.Wait()
-	cleanupCgroup()
+	cleanupCgroup(cgroupDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "child exited:", err)
 	}
@@ -161,9 +186,17 @@ func childMount(cfg *Config) {
 
 	must(syscall.Sethostname([]byte(cfg.Hostname)))
 
-	// devTarget := filepath.Join(cfg.RootFS, "dev")
-	// must(os.MkdirAll(devTarget, 0755))
-	// must(syscall.Mount("/dev", devTarget, "", syscall.MS_BIND|syscall.MS_REC, ""))
+	must(syscall.Mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, ""))
+
+	switch cfg.DeviceMode {
+	case DeviceModeBind:
+		devTarget := filepath.Join(cfg.RootFS, "dev")
+		must(os.MkdirAll(devTarget, 0755))
+		must(syscall.Mount("/dev", devTarget, "", syscall.MS_BIND|syscall.MS_REC, ""))
+	case DeviceModeMKNOD:
+		must(os.MkdirAll(filepath.Join(cfg.RootFS, "dev"), 0755))
+		must(setupDevNodes(filepath.Join(cfg.RootFS, "dev")))
+	}
 
 	// chroot เข้า rootfs
 	must(syscall.Chroot(cfg.RootFS))
@@ -177,39 +210,106 @@ func childMount(cfg *Config) {
 	os.MkdirAll("/dev/pts", 0755)
 	os.MkdirAll("/dev/shm", 0755)
 	os.MkdirAll("/tmp", 01777)
-	syscall.Mount("devpts", "/dev/pts", "devpts", 0, "newinstance,ptmxmode=0666")
-	syscall.Mount("tmpfs", "/dev/shm", "tmpfs", 0, "")
-	syscall.Mount("tmpfs", "/tmp", "tmpfs", 0, "mode=1777")
+	must(syscall.Mount("devpts", "/dev/pts", "devpts", 0, "newinstance,ptmxmode=0666,mode=0620,gid=5"))
+	must(syscall.Mount("tmpfs", "/dev/shm", "tmpfs", 0, ""))
+	must(syscall.Mount("tmpfs", "/tmp", "tmpfs", 0, "mode=1777"))
 
+	ptmx := "/dev/ptmx"
+	if _, err := os.Lstat(ptmx); os.IsNotExist(err) {
+		must(os.Symlink("pts/ptmx", ptmx))
+	}
+
+	time.Sleep(2 * time.Second)
+
+	env := []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "TERM=xterm"}
+
+	// -------------------------
+	// apt update
+	// -------------------------
+	if cfg.InitApp == true {
+		fmt.Println("[child] apt update...")
+		aptUpdate := exec.Command("/usr/bin/apt-get", "update")
+		aptUpdate.Stdin = os.Stdin
+		aptUpdate.Stdout = os.Stdout
+		aptUpdate.Stderr = os.Stderr
+		aptUpdate.Env = env
+
+		if err := aptUpdate.Run(); err != nil {
+			fmt.Fprintln(os.Stderr, "[child] apt update failed:", err)
+			return
+		}
+	}
+
+	// -------------------------
+	// install essential packages
+	// -------------------------
+	if cfg.InitApp == true {
+		fmt.Println("[child] apt update...")
+		aptUpdate := exec.Command("/usr/bin/apt-get", "install", "-y", "iproute2", "iputils-ping", "net-tools", "curl", "htop")
+		aptUpdate.Stdin = os.Stdin
+		aptUpdate.Stdout = os.Stdout
+		aptUpdate.Stderr = os.Stderr
+		aptUpdate.Env = env
+
+		if err := aptUpdate.Run(); err != nil {
+			fmt.Fprintln(os.Stderr, "[child] apt install failed:", err)
+			return
+		}
+	}
+
+	// -------------------------
+	// install python3
+	// -------------------------
+	if cfg.InitApp == true {
+		fmt.Println("[child] installing python3...")
+		aptInstall := exec.Command(
+			"/usr/bin/apt-get",
+			"install",
+			"-y",
+			"python3",
+			"python3-pip",
+			"python3-venv",
+		)
+		aptInstall.Stdin = os.Stdin
+		aptInstall.Stdout = os.Stdout
+		aptInstall.Stderr = os.Stderr
+		aptInstall.Env = env
+
+		if err := aptInstall.Run(); err != nil {
+			fmt.Fprintln(os.Stderr, "[child] apt install python3 failed:", err)
+			return
+		}
+	}
+
+	// -------------------------
+	// bash
+	// -------------------------
 	cmd := exec.Command("/bin/bash")
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "TERM=xterm"}
+	cmd.Env = env
 
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "[child] bash exited with error:", err)
 	}
 
-	syscall.Unmount("/tmp", 0)
-	syscall.Unmount("/dev/pts", 0)
-	syscall.Unmount("/dev/shm", 0)
-	// syscall.Unmount("/dev", syscall.MNT_DETACH)
-}
-
-func childMKNOD(cfg *Config) error {
-	return nil
+	syscall.Unmount("/tmp", syscall.MNT_DETACH)
+	syscall.Unmount("/dev/pts", syscall.MNT_DETACH)
+	syscall.Unmount("/dev/shm", syscall.MNT_DETACH)
+	if cfg.DeviceMode == DeviceModeBind {
+		syscall.Unmount(filepath.Join(cfg.RootFS, "dev"), syscall.MNT_DETACH)
+	}
 }
 
 func child(cfg *Config) {
 	childMount(cfg)
-	// childMKNOD(cfg)
 }
 
 // ---------------------------------------------------------
 // cgroup v2 helpers
 // ---------------------------------------------------------
-func setupCgroupSkeleton() error {
+func setupCgroupSkeleton(cgroupDir string) error {
 	if err := os.MkdirAll(cgroupDir, 0755); err != nil {
 		return err
 	}
@@ -228,12 +328,31 @@ func setupCgroupSkeleton() error {
 	return nil
 }
 
-func addToCgroup(pid int) error {
+func addToCgroupBackup(pid int, cgroupDir string) error {
 	return os.WriteFile(cgroupDir+"/cgroup.procs", []byte(strconv.Itoa(pid)), 0644)
 }
 
-func cleanupCgroup() {
-	os.Remove(cgroupDir) // rmdir เฉยๆ ถ้ายังมี process อยู่จะ fail ซึ่งโอเค ปล่อยผ่าน
+func addToCgroup(pid int, cgroupDir string) error {
+	path := filepath.Join(cgroupDir, "cgroup.procs")
+
+	if err := os.WriteFile(path, []byte(strconv.Itoa(pid)), 0644); err != nil {
+		return fmt.Errorf("add pid %d to cgroup: %w", pid, err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read cgroup.procs: %w", err)
+	}
+
+	fmt.Printf("cgroup.procs: %s", data)
+
+	return nil
+}
+
+func cleanupCgroup(cgroupDir string) {
+	if err := os.Remove(cgroupDir); err != nil {
+		fmt.Println("cleanup cgroup:", err)
+	}
 }
 
 func must(err error) {
