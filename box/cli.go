@@ -22,6 +22,7 @@ type PortMapping struct {
 }
 
 type Config struct {
+	IsRoot     bool
 	Workspace  string
 	RootFS     string
 	CGroupDir  string
@@ -89,6 +90,12 @@ func parseCLI(args []string) (*Config, error) {
 	cfg.Remove = false
 	cfg.CGroupDir = "/sys/fs/cgroup/gobox"
 	cfg.InitApp = false
+	if os.Getuid() == 0 {
+		cfg.IsRoot = true
+	} else {
+		cfg.IsRoot = false
+		// sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+	}
 
 	switch args[0] {
 	case "-h", "--help":

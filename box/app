@@ -15,9 +15,15 @@ help() {
     echo "  $0 dev"
     echo "  $0 build"
     echo "  $0 run"
+    echo "  $0 dev_sudo"
+    echo "  $0 run_sudo"
 }
 
 dev() {
+    env GOBOX_WORKSPACE=$USERHOME/chroot/gobox go run . "$@"
+}
+
+dev_sudo() {
     sudo env GOBOX_WORKSPACE=$USERHOME/chroot/gobox $(which go) run . "$@"
 }
 
@@ -27,6 +33,11 @@ build() {
 }
 
 run() {
+    build
+    env GOBOX_WORKSPACE=$USERHOME/chroot/gobox dist/gobox "$@"
+}
+
+run_sudo() {
     build
     sudo env GOBOX_WORKSPACE=$USERHOME/chroot/gobox dist/gobox "$@"
 }
@@ -49,6 +60,11 @@ common_cli() {
                 dev "$@"
                 exit 0
                 ;;
+            dev_sudo)
+                shift
+                dev_sudo "$@"
+                exit 0
+                ;;
             build)
                 build
                 exit 0
@@ -56,6 +72,11 @@ common_cli() {
             run)
                 shift
                 run "$@"
+                exit 0
+                ;;
+            run_sudo)
+                shift
+                run_sudo "$@"
                 exit 0
                 ;;
             *)
