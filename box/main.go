@@ -305,6 +305,19 @@ func child(cfg *Config) {
 }
 
 func runContainerRootless(cfg *Config) {
+	enabledArmor, errArmor := isAppArmorRestrictUnprivilegedUsernsEnabled()
+	if errArmor != nil {
+		fmt.Println("Error:", errArmor)
+		return
+	}
+	if enabledArmor {
+		fmt.Println("AppArmor restrict_unprivileged_userns is enabled")
+		fmt.Println("sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0")
+		os.Exit(0)
+	} else {
+		fmt.Println("AppArmor restrict_unprivileged_userns is disabled")
+	}
+
 	arch, errArch := detectArch()
 	must(errArch, "detect arch")
 	must(setupRootfs(arch, cfg), "setup rootfs")
@@ -347,6 +360,13 @@ func runContainerRootless(cfg *Config) {
 		},
 		GidMappingsEnableSetgroups: false,
 	}
+
+	fmt.Println("host uid:", hUID)
+	fmt.Println("host gid:", hGID)
+
+	fmt.Printf("uid mappings: %+v\n", cmd.SysProcAttr.UidMappings)
+	fmt.Printf("gid mappings: %+v\n", cmd.SysProcAttr.GidMappings)
+	fmt.Printf("clone flags: %x\n", cmd.SysProcAttr.Cloneflags)
 
 	// ---------------------------------------
 	// Start child
@@ -470,6 +490,24 @@ func childRootless(cfg *Config) {
 	syscall.Unmount("/dev/shm", syscall.MNT_DETACH)
 	if cfg.DeviceMode == DeviceModeBind {
 		syscall.Unmount(filepath.Join(cfg.RootFS, "dev"), syscall.MNT_DETACH)
+	}
+}
+
+func isAppArmorRestrictUnprivilegedUsernsEnabled() (bool, error) {
+	data, err := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+	if err != nil {
+		return false, err
+	}
+
+	value := strings.TrimSpace(string(data))
+
+	switch value {
+	case "1":
+		return true, nil
+	case "0":
+		return false, nil
+	default:
+		return false, fmt.Errorf("unexpected value: %q", value)
 	}
 }
 
