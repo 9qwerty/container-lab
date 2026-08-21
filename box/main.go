@@ -488,6 +488,8 @@ func childMountRootless(cfg *Config) {
 	must(syscall.Chroot(overlay.MergedDir), "chroot")
 	must(os.Chdir("/"), "chdir")
 
+	must(setupAptRootless(), "setup apt rootless")
+
 	must(syscall.Mount("proc", "/proc", "proc", 0, ""), "mount proc")
 	defer syscall.Unmount("/proc", 0)
 

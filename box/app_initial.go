@@ -151,3 +151,23 @@ func appInitial(env []string) {
 		return
 	}
 }
+
+// apt -o APT::Sandbox::User=root update
+func setupAptRootless() error {
+	const path = "/etc/apt/apt.conf.d/99-rootless"
+	const content = `APT::Sandbox::User "root";`
+
+	if _, err := os.Stat("/etc/apt"); os.IsNotExist(err) {
+		return nil
+	}
+
+	if err := os.MkdirAll("/etc/apt/apt.conf.d", 0755); err != nil {
+		return fmt.Errorf("create apt config dir: %w", err)
+	}
+
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+
+	return nil
+}
