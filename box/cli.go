@@ -16,6 +16,13 @@ const (
 	DeviceModeMKNOD
 )
 
+type OverlayConfig struct {
+	LowerDir  string
+	UpperDir  string
+	WorkDir   string
+	MergedDir string
+}
+
 type PortMapping struct {
 	HostPort      int
 	ContainerPort int
@@ -34,6 +41,7 @@ type Config struct {
 	Remove     bool // สำหรับ command "rm"
 	Ports      []PortMapping
 	InitApp    bool
+	Overlay    OverlayConfig
 }
 
 func help() {
@@ -177,6 +185,12 @@ func parseCLI(args []string) (*Config, error) {
 			cfg.RootFS = filepath.Join(cfg.Workspace, cfg.Name)
 		}
 		cfg.CGroupDir = filepath.Join("/sys/fs/cgroup", cfg.Name)
+		cfg.Overlay = OverlayConfig{
+			LowerDir:  filepath.Join(goboxWorkspace, "images/ubuntu/rootfs"),
+			UpperDir:  filepath.Join(cfg.RootFS, "upper"),
+			WorkDir:   filepath.Join(cfg.RootFS, "work"),
+			MergedDir: filepath.Join(cfg.RootFS, "merged"),
+		}
 
 	case "rm":
 		cfg.Command = "rm"

@@ -185,3 +185,49 @@ func runCmd(name string, args ...string) error {
 	}
 	return nil
 }
+
+func setupOverlay(o OverlayConfig) error {
+	uid, gid := hostIDs()
+	if err := os.MkdirAll(o.UpperDir, 0755); err != nil {
+		return err
+	}
+
+	if err := os.Chown(o.UpperDir, uid, gid); err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(o.WorkDir, 0755); err != nil {
+		return err
+	}
+
+	if err := os.Chown(o.WorkDir, uid, gid); err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(o.MergedDir, 0755); err != nil {
+		return err
+	}
+
+	if err := os.Chown(o.MergedDir, uid, gid); err != nil {
+		return err
+	}
+
+	opts := fmt.Sprintf(
+		"lowerdir=%s,upperdir=%s,workdir=%s",
+		o.LowerDir,
+		o.UpperDir,
+		o.WorkDir,
+	)
+
+	return syscall.Mount(
+		"overlay",
+		o.MergedDir,
+		"overlay",
+		0,
+		opts,
+	)
+}
+
+func cleanupOverlay(o OverlayConfig) {
+	syscall.Unmount(o.MergedDir, syscall.MNT_DETACH)
+}

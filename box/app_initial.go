@@ -68,8 +68,9 @@ func setupRootfs(arch string, cfg *Config) error {
 	)
 	archiveFile := fmt.Sprintf("ubuntu-jammy-oci-%s-root.tar.gz", arch)
 
+	lowerDir := cfg.Overlay.LowerDir
 	// ถ้ามี /bin/bash อยู่แล้วใน rootfs ข้ามทั้งหมด (idempotent เหมือน script เดิม)
-	if _, err := os.Stat(filepath.Join(cfg.RootFS, "bin", "bash")); err == nil {
+	if _, err := os.Stat(filepath.Join(lowerDir, "bin", "bash")); err == nil {
 		fmt.Println("Root filesystem already exists, skipping download/extract.")
 		return nil
 	}
@@ -81,17 +82,17 @@ func setupRootfs(arch string, cfg *Config) error {
 		return fmt.Errorf("chown rootfs : %w", err)
 	}
 
-	if err := extractTarGz(archiveFile, cfg.RootFS); err != nil {
+	if err := extractTarGz(archiveFile, lowerDir); err != nil {
 		return fmt.Errorf("extract : %w", err)
 	}
-	if err := chownRootfs(cfg.RootFS, uid, gid); err != nil {
+	if err := chownRootfs(lowerDir, uid, gid); err != nil {
 		return fmt.Errorf("chown rootfs : %w", err)
 	}
 
-	if err := setupResolvConf(cfg.RootFS); err != nil {
+	if err := setupResolvConf(lowerDir); err != nil {
 		return fmt.Errorf("setup resolv.conf : %w", err)
 	}
-	if err := setupHostsFile(cfg.RootFS, cfg.Hostname); err != nil {
+	if err := setupHostsFile(lowerDir, cfg.Hostname); err != nil {
 		return fmt.Errorf("setup hosts : %w", err)
 	}
 	return nil

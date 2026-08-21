@@ -229,22 +229,37 @@ func childMount(cfg *Config) {
 
 	must(syscall.Mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, ""), "mount / as private")
 
+	overlay := cfg.Overlay
+	must(setupOverlay(overlay), "setup overlay")
+	defer cleanupOverlay(overlay)
+	out, err := exec.Command(
+		"findmnt",
+		"-T",
+		overlay.MergedDir,
+	).CombinedOutput()
+
+	fmt.Printf(
+		"findmnt:\n%s\nerr=%v\n",
+		out,
+		err,
+	)
+
 	switch cfg.DeviceMode {
 	case DeviceModeBind:
-		devTarget := filepath.Join(cfg.RootFS, "dev")
+		devTarget := filepath.Join(overlay.MergedDir, "dev")
 		fmt.Printf("[child] uid=%d euid=%d gid=%d target=%s\n",
 			os.Getuid(), os.Geteuid(), os.Getgid(), devTarget)
 		must(os.MkdirAll(devTarget, 0755))
 		must(syscall.Mount("/dev", devTarget, "", syscall.MS_BIND|syscall.MS_REC, ""), "mount /dev as bind")
 	case DeviceModeMKNOD:
-		must(os.MkdirAll(filepath.Join(cfg.RootFS, "dev"), 0755))
-		must(setupDevNodes(filepath.Join(cfg.RootFS, "dev")), "setupDevNodes")
+		must(os.MkdirAll(filepath.Join(overlay.MergedDir, "dev"), 0755))
+		must(setupDevNodes(filepath.Join(overlay.MergedDir, "dev")), "setupDevNodes")
 	}
 
 	lxcfsHandles := setupLxcfs()
 
 	// chroot เข้า rootfs
-	must(syscall.Chroot(cfg.RootFS), "chroot")
+	must(syscall.Chroot(overlay.MergedDir), "chroot")
 	must(os.Chdir("/"), "chdir")
 
 	// mount proc ใหม่ (จำเป็นเพราะอยู่ใน PID namespace ใหม่ที่ยังไม่มี /proc เป็นของตัวเอง)
@@ -290,7 +305,7 @@ func childMount(cfg *Config) {
 	syscall.Unmount("/dev/pts", syscall.MNT_DETACH)
 	syscall.Unmount("/dev/shm", syscall.MNT_DETACH)
 	if cfg.DeviceMode == DeviceModeBind {
-		syscall.Unmount(filepath.Join(cfg.RootFS, "dev"), syscall.MNT_DETACH)
+		syscall.Unmount(filepath.Join(overlay.MergedDir, "dev"), syscall.MNT_DETACH)
 	}
 }
 
@@ -307,7 +322,7 @@ func child(cfg *Config) {
 	if cfg.IsRoot {
 		childMount(cfg)
 	} else {
-		childRootless(cfg)
+		childMountRootless(cfg)
 	}
 }
 
@@ -413,7 +428,7 @@ func runContainerRootless(cfg *Config) {
 	}
 }
 
-func childRootless(cfg *Config) {
+func childMountRootless(cfg *Config) {
 	fmt.Printf("[child] pid=%d entering container...\n", os.Getpid())
 
 	fmt.Printf("[child] uid: %d , gid: %d\n", os.Getuid(), os.Getgid())
@@ -440,22 +455,37 @@ func childRootless(cfg *Config) {
 
 	must(syscall.Mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, ""), "mount / as private")
 
+	overlay := cfg.Overlay
+	must(setupOverlay(overlay), "setup overlay")
+	defer cleanupOverlay(overlay)
+	out, err := exec.Command(
+		"findmnt",
+		"-T",
+		overlay.MergedDir,
+	).CombinedOutput()
+
+	fmt.Printf(
+		"findmnt:\n%s\nerr=%v\n",
+		out,
+		err,
+	)
+
 	switch cfg.DeviceMode {
 	case DeviceModeBind:
-		devTarget := filepath.Join(cfg.RootFS, "dev")
+		devTarget := filepath.Join(overlay.MergedDir, "dev")
 		fmt.Printf("[child] uid=%d euid=%d gid=%d target=%s\n",
 			os.Getuid(), os.Geteuid(), os.Getgid(), devTarget)
 		must(os.MkdirAll(devTarget, 0755))
 		must(syscall.Mount("/dev", devTarget, "", syscall.MS_BIND|syscall.MS_REC, ""), "mount /dev as bind")
 	case DeviceModeMKNOD:
-		must(os.MkdirAll(filepath.Join(cfg.RootFS, "dev"), 0755))
-		must(setupDevNodes(filepath.Join(cfg.RootFS, "dev")), "setupDevNodes")
+		must(os.MkdirAll(filepath.Join(overlay.MergedDir, "dev"), 0755))
+		must(setupDevNodes(filepath.Join(overlay.MergedDir, "dev")), "setupDevNodes")
 	}
 
 	lxcfsHandles := setupLxcfs()
 
 	// chroot เข้า rootfs
-	must(syscall.Chroot(cfg.RootFS), "chroot")
+	must(syscall.Chroot(overlay.MergedDir), "chroot")
 	must(os.Chdir("/"), "chdir")
 
 	must(syscall.Mount("proc", "/proc", "proc", 0, ""), "mount proc")
@@ -496,7 +526,7 @@ func childRootless(cfg *Config) {
 	syscall.Unmount("/dev/pts", syscall.MNT_DETACH)
 	syscall.Unmount("/dev/shm", syscall.MNT_DETACH)
 	if cfg.DeviceMode == DeviceModeBind {
-		syscall.Unmount(filepath.Join(cfg.RootFS, "dev"), syscall.MNT_DETACH)
+		syscall.Unmount(filepath.Join(overlay.MergedDir, "dev"), syscall.MNT_DETACH)
 	}
 }
 
