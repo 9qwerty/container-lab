@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"os/exec"
 	"strconv"
+	"strings"
 )
 
 type NetConfig struct {
@@ -147,4 +148,126 @@ func runOut(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	out, err := cmd.Output()
 	return string(out), err
+}
+
+// validatePortAvailable: เทียบเท่า validate_port_available() ใน bash เดิม
+func validatePortAvailable(hostPort int, nsIP string) error {
+	// (1) เช็ค iptables PREROUTING DNAT rule ที่ผูก dport นี้อยู่แล้ว
+	out, _ := runOut("iptables", "-t", "nat", "-S", "PREROUTING")
+	dportStr := fmt.Sprintf("--dport %d ", hostPort)
+
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, dportStr) && strings.Contains(line, "-j DNAT") {
+			if strings.Contains(line, "--to-destination "+nsIP+":") {
+				fmt.Printf("Port %d already forwarded to this container, skipping (idempotent).\n", hostPort)
+				return nil
+			}
+			return fmt.Errorf("host port %d already forwarded by another running container:\n  %s", hostPort, line)
+		}
+	}
+
+	// (2) เช็คว่า host process ผูก port นี้อยู่แล้วหรือไม่ (ss -tln)
+	ssOut, _ := runOut("ss", "-Htln")
+	suffix := fmt.Sprintf(":%d", hostPort)
+	for _, line := range strings.Split(ssOut, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 4 && strings.HasSuffix(fields[3], suffix) {
+			return fmt.Errorf("host port %d already in use by a process on the host", hostPort)
+		}
+	}
+
+	// (3) warn ถ้าเป็น privileged port
+	if hostPort < 1024 {
+		fmt.Printf("Warning: host port %d is a privileged port (<1024).\n", hostPort)
+	}
+
+	return nil
+}
+
+// exposePorts: setup DNAT rules ให้ทุก port mapping
+// เทียบเท่า loop "for mapping in ${PORTS[@]}" ใน setup_ns() เดิม
+func exposePorts(ports []PortMapping, nc *NetConfig) error {
+
+	run("sysctl", "-w", "net.ipv4.conf.all.route_localnet=1")
+	run("sysctl", "-w", "net.ipv4.conf.lo.route_localnet=1")
+	confBridge := fmt.Sprintf("net.ipv4.conf.%s.route_localnet=1", nc.Bridge)
+	run("sysctl", "-w", confBridge)
+
+	for _, pm := range ports {
+		if err := validatePortAvailable(pm.HostPort, nc.NSIP); err != nil {
+			return fmt.Errorf("port conflict: %w", err)
+		}
+
+		fmt.Printf("Exposing port: %d -> %d\n", pm.HostPort, pm.ContainerPort)
+		dest := fmt.Sprintf("%s:%d", nc.NSIP, pm.ContainerPort)
+		hostPortStr := strconv.Itoa(pm.HostPort)
+
+		// External traffic -> container (PREROUTING, table nat)
+		run("iptables", "-t", "nat", "-D", "PREROUTING",
+			"-p", "tcp", "-i", nc.OutIf, "--dport", hostPortStr,
+			"-j", "DNAT", "--to-destination", dest)
+		if err := run("iptables", "-t", "nat", "-A", "PREROUTING",
+			"-p", "tcp", "-i", nc.OutIf, "--dport", hostPortStr,
+			"-j", "DNAT", "--to-destination", dest); err != nil {
+			return fmt.Errorf("PREROUTING rule for port %d: %w", pm.HostPort, err)
+		}
+
+		// Internal traffic (localhost) -> container (OUTPUT, table nat)
+		run("iptables", "-t", "nat", "-D", "OUTPUT",
+			"-p", "tcp", "-d", "127.0.0.1", "--dport", hostPortStr,
+			"-j", "DNAT", "--to-destination", dest)
+		if err := run("iptables", "-t", "nat", "-A", "OUTPUT",
+			"-p", "tcp", "-d", "127.0.0.1", "--dport", hostPortStr,
+			"-j", "DNAT", "--to-destination", dest); err != nil {
+			return fmt.Errorf("OUTPUT rule for port %d: %w", pm.HostPort, err)
+		}
+
+		// Forward traffic -> container (FORWARD, table filter)
+		containerPortStr := strconv.Itoa(pm.ContainerPort)
+		run("iptables", "-D", "FORWARD",
+			"-p", "tcp", "-d", nc.NSIP, "--dport", containerPortStr, "-j", "ACCEPT")
+		if err := run("iptables", "-A", "FORWARD",
+			"-p", "tcp", "-d", nc.NSIP, "--dport", containerPortStr, "-j", "ACCEPT"); err != nil {
+			return fmt.Errorf("FORWARD rule for port %d: %w", pm.HostPort, err)
+		}
+	}
+
+	// Internal traffic -> external (POSTROUTING, table nat)
+	run("iptables", "-t", "nat", "-D", "POSTROUTING",
+		"-o", nc.Bridge,
+		"-m", "addrtype", "--src-type", "LOCAL",
+		"-m", "addrtype", "--dst-type", "UNICAST",
+		"-j", "MASQUERADE")
+	if err := run("iptables", "-t", "nat", "-A", "POSTROUTING",
+		"-o", nc.Bridge,
+		"-m", "addrtype", "--src-type", "LOCAL",
+		"-m", "addrtype", "--dst-type", "UNICAST",
+		"-j", "MASQUERADE"); err != nil {
+		return fmt.Errorf("POSTROUTING rule for %s: %w", nc.Bridge, err)
+	}
+
+	return nil
+}
+
+// cleanupPorts: ลบ DNAT rules ทั้งหมด (เรียกตอน container exit)
+func cleanupPorts(ports []PortMapping, nc *NetConfig) {
+	for _, pm := range ports {
+		dest := fmt.Sprintf("%s:%d", nc.NSIP, pm.ContainerPort)
+		hostPortStr := strconv.Itoa(pm.HostPort)
+		containerPortStr := strconv.Itoa(pm.ContainerPort)
+
+		run("iptables", "-t", "nat", "-D", "PREROUTING",
+			"-p", "tcp", "-i", nc.OutIf, "--dport", hostPortStr,
+			"-j", "DNAT", "--to-destination", dest)
+		run("iptables", "-t", "nat", "-D", "OUTPUT",
+			"-p", "tcp", "-d", "127.0.0.1", "--dport", hostPortStr,
+			"-j", "DNAT", "--to-destination", dest)
+		run("iptables", "-D", "FORWARD",
+			"-p", "tcp", "-d", nc.NSIP, "--dport", containerPortStr, "-j", "ACCEPT")
+	}
+	run("iptables", "-t", "nat", "-D", "POSTROUTING",
+		"-o", nc.Bridge,
+		"-m", "addrtype", "--src-type", "LOCAL",
+		"-m", "addrtype", "--dst-type", "UNICAST",
+		"-j", "MASQUERADE")
 }

@@ -170,6 +170,7 @@ func runContainer(cfg *Config) {
 	// Network
 	// ---------------------------------------
 	must(setupNetwork(nc, pid), "setup network")
+	must(exposePorts(cfg.Ports, nc), "expose ports")
 
 	// ---------------------------------------
 	// Release child
@@ -201,6 +202,7 @@ func runContainer(cfg *Config) {
 	// Wait
 	// ---------------------------------------
 	err := cmd.Wait()
+	cleanupPorts(cfg.Ports, nc)
 	cleanupNetwork(nc)
 	cleanupCgroup(cgroupDir)
 	cleanupDisk(dc, cfg.Cleanup)
