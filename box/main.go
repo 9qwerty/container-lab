@@ -100,6 +100,10 @@ func runContainer(cfg *Config) {
 	cgroupDir := cfg.CGroupDir
 	arch, errArch := detectArch()
 	must(errArch, "detect arch")
+
+	dc, errDisk := setupDisk(cfg.Workspace, cfg.Name)
+	must(errDisk, "setup disk")
+
 	must(setupRootfs(arch, cfg), "setup rootfs")
 
 	must(setupCgroupSkeleton(cgroupDir), "setup cgroup skeleton")
@@ -199,6 +203,7 @@ func runContainer(cfg *Config) {
 	err := cmd.Wait()
 	cleanupNetwork(nc)
 	cleanupCgroup(cgroupDir)
+	cleanupDisk(dc, cfg.Cleanup)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "child exited:", err)
 	}
