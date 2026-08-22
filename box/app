@@ -20,15 +20,15 @@ help() {
 }
 
 dev() {
-    env GOBOX_WORKSPACE=$USERHOME/chroot/gobox go run . "$@"
+    env GOBOX_WORKSPACE=$USERHOME/chroot/gobox go run cmd/box/main.go "$@"
 }
 
 dev_sudo() {
-    sudo env GOBOX_WORKSPACE=$USERHOME/chroot/gobox $(which go) run . "$@"
+    sudo env GOBOX_WORKSPACE=$USERHOME/chroot/gobox $(which go) run cmd/box/main.go "$@"
 }
 
 build() {
-    go build -o dist/gobox .
+    go build -o dist/gobox cmd/box/main.go
     echo "Built gobox to dist/gobox"
 }
 

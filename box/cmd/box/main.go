@@ -2,6 +2,12 @@
 package main
 
 import (
+	"box/internal/app"
+	"box/internal/cli"
+	"box/internal/config"
+	"box/internal/container"
+	"box/internal/disk"
+	"box/internal/namespace"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +17,8 @@ import (
 	"syscall"
 )
 
+type Config = config.Config
+
 type CloneConfig struct {
 	CLONE_NEWUSER bool
 	CLONE_NEWUTS  bool
@@ -19,6 +27,9 @@ type CloneConfig struct {
 	CLONE_NEWIPC  bool
 	CLONE_NEWNET  bool
 }
+
+var detectArch = namespace.DetectArch
+var must = namespace.Must
 
 func (c CloneConfig) CloneFlags() uintptr {
 	var flags uintptr
@@ -45,16 +56,9 @@ func (c CloneConfig) CloneFlags() uintptr {
 	return flags
 }
 
-func getenv(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
 func main() {
 	if len(os.Args) < 2 {
-		help()
+		cli.Help()
 		os.Exit(0)
 	}
 
@@ -73,7 +77,7 @@ func main() {
 		return
 	}
 
-	cfg, err := parseCLI(os.Args[1:])
+	cfg, err := cli.ParseCLI(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
@@ -81,9 +85,9 @@ func main() {
 
 	switch cfg.Command {
 	case "list":
-		must(listWorkspace(cfg), "list workspace")
+		must(cli.ListWorkspace(cfg), "list workspace")
 	case "rm":
-		must(removeWorkspace(cfg.Name, cfg), "remove workspace")
+		must(cli.RemoveWorkspace(cfg.Name, cfg), "remove workspace")
 	case "run":
 		if cfg.IsRoot {
 			runContainer(cfg)
@@ -101,12 +105,12 @@ func runContainer(cfg *Config) {
 	arch, errArch := detectArch()
 	must(errArch, "detect arch")
 
-	dc, errDisk := setupDisk(cfg.Workspace, cfg.Name)
+	dc, errDisk := disk.SetupDisk(cfg.Workspace, cfg.Name)
 	must(errDisk, "setup disk")
 
-	must(setupRootfs(arch, cfg), "setup rootfs")
+	must(app.SetupRootfs(arch, cfg), "setup rootfs")
 
-	must(setupCgroupSkeleton(cgroupDir), "setup cgroup skeleton")
+	must(container.SetupCgroupSkeleton(cgroupDir), "setup cgroup skeleton")
 
 	configData, errConfigData := json.Marshal(cfg)
 	must(errConfigData, "marshal config")
@@ -114,7 +118,7 @@ func runContainer(cfg *Config) {
 	syncR, syncW, errPipe := os.Pipe()
 	must(errPipe, "create sync pipe")
 
-	nc, errNet := deriveNetConfig(cfg.Name)
+	nc, errNet := container.DeriveNetConfig(cfg.Name)
 	must(errNet, "derive net config")
 
 	cmd := exec.Command("/proc/self/exe", "child")
@@ -142,7 +146,7 @@ func runContainer(cfg *Config) {
 	}
 
 	if cloneConfig.CLONE_NEWUSER {
-		hUID, hGID := hostIDs()
+		hUID, hGID := namespace.HostIDs()
 		cmd.SysProcAttr.UidMappings = []syscall.SysProcIDMap{
 			{ContainerID: 0, HostID: hUID, Size: 1},
 		}
@@ -164,13 +168,13 @@ func runContainer(cfg *Config) {
 	// ---------------------------------------
 	// CGroup
 	// ---------------------------------------
-	must(addToCgroup(pid, cgroupDir), "add cgroup")
+	must(container.AddToCgroup(pid, cgroupDir), "add cgroup")
 
 	// ---------------------------------------
 	// Network
 	// ---------------------------------------
-	must(setupNetwork(nc, pid), "setup network")
-	must(exposePorts(cfg.Ports, nc), "expose ports")
+	must(container.SetupNetwork(nc, pid), "setup network")
+	must(container.ExposePorts(cfg.Ports, nc), "expose ports")
 
 	// ---------------------------------------
 	// Release child
@@ -202,17 +206,17 @@ func runContainer(cfg *Config) {
 	// Wait
 	// ---------------------------------------
 	err := cmd.Wait()
-	cleanupPorts(cfg.Ports, nc)
-	cleanupNetwork(nc)
-	cleanupCgroup(cgroupDir)
-	cleanupDisk(dc, cfg.Cleanup)
+	container.CleanupPorts(cfg.Ports, nc)
+	container.CleanupNetwork(nc)
+	container.CleanupCgroup(cgroupDir)
+	disk.CleanupDisk(dc, cfg.Cleanup)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "child exited:", err)
 	}
 
 	if cfg.Cleanup {
 		fmt.Println("Cleaning up...")
-		if rmErr := removeWorkspace(cfg.Name, cfg); rmErr != nil {
+		if rmErr := cli.RemoveWorkspace(cfg.Name, cfg); rmErr != nil {
 			fmt.Fprintln(os.Stderr, "cleanup:", rmErr)
 		}
 		fmt.Println("Cleaned up.")
@@ -230,8 +234,8 @@ func childMount(cfg *Config) {
 	must(syscall.Mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, ""), "mount / as private")
 
 	overlay := cfg.Overlay
-	must(setupOverlay(overlay), "setup overlay")
-	defer cleanupOverlay(overlay)
+	must(disk.SetupOverlay(overlay), "setup overlay")
+	defer disk.CleanupOverlay(overlay)
 	out, err := exec.Command(
 		"findmnt",
 		"-T",
@@ -245,18 +249,18 @@ func childMount(cfg *Config) {
 	)
 
 	switch cfg.DeviceMode {
-	case DeviceModeBind:
+	case config.DeviceModeBind:
 		devTarget := filepath.Join(overlay.MergedDir, "dev")
 		fmt.Printf("[child] uid=%d euid=%d gid=%d target=%s\n",
 			os.Getuid(), os.Geteuid(), os.Getgid(), devTarget)
 		must(os.MkdirAll(devTarget, 0755))
 		must(syscall.Mount("/dev", devTarget, "", syscall.MS_BIND|syscall.MS_REC, ""), "mount /dev as bind")
-	case DeviceModeMKNOD:
+	case config.DeviceModeMKNOD:
 		must(os.MkdirAll(filepath.Join(overlay.MergedDir, "dev"), 0755))
-		must(setupDevNodes(filepath.Join(overlay.MergedDir, "dev")), "setupDevNodes")
+		must(container.SetupDevNodes(filepath.Join(overlay.MergedDir, "dev")), "setupDevNodes")
 	}
 
-	lxcfsHandles := setupLxcfs()
+	lxcfsHandles := container.SetupLxcfs()
 
 	// chroot เข้า rootfs
 	must(syscall.Chroot(overlay.MergedDir), "chroot")
@@ -266,7 +270,7 @@ func childMount(cfg *Config) {
 	must(syscall.Mount("proc", "/proc", "proc", 0, ""), "mount proc")
 	defer syscall.Unmount("/proc", 0)
 
-	mountLxcfs(lxcfsHandles)
+	container.MountLxcfs(lxcfsHandles)
 
 	// mount /dev/pts, /dev/shm แบบขั้นต่ำ (ถ้ายังไม่ทำใน rootfs)
 	os.MkdirAll("/dev/pts", 0755)
@@ -284,7 +288,7 @@ func childMount(cfg *Config) {
 	env := []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "TERM=xterm"}
 
 	if cfg.InitApp == true {
-		appInitial(env)
+		app.AppInitial(env)
 	}
 
 	// -------------------------
@@ -300,11 +304,11 @@ func childMount(cfg *Config) {
 		fmt.Fprintln(os.Stderr, "[child] bash exited with error:", err)
 	}
 
-	unmountLxcfs()
+	container.UnmountLxcfs()
 	syscall.Unmount("/tmp", syscall.MNT_DETACH)
 	syscall.Unmount("/dev/pts", syscall.MNT_DETACH)
 	syscall.Unmount("/dev/shm", syscall.MNT_DETACH)
-	if cfg.DeviceMode == DeviceModeBind {
+	if cfg.DeviceMode == config.DeviceModeBind {
 		syscall.Unmount(filepath.Join(overlay.MergedDir, "dev"), syscall.MNT_DETACH)
 	}
 }
@@ -342,7 +346,7 @@ func runContainerRootless(cfg *Config) {
 
 	arch, errArch := detectArch()
 	must(errArch, "detect arch")
-	must(setupRootfs(arch, cfg), "setup rootfs")
+	must(app.SetupRootfs(arch, cfg), "setup rootfs")
 
 	configData, errConfigData := json.Marshal(cfg)
 	must(errConfigData, "marshal config")
@@ -370,7 +374,7 @@ func runContainerRootless(cfg *Config) {
 		CLONE_NEWNET:  false,
 	}
 
-	hUID, hGID := hostIDs()
+	hUID, hGID := namespace.HostIDs()
 
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: cloneConfig.CloneFlags(),
@@ -421,7 +425,7 @@ func runContainerRootless(cfg *Config) {
 
 	if cfg.Cleanup {
 		fmt.Println("Cleaning up...")
-		if rmErr := removeWorkspace(cfg.Name, cfg); rmErr != nil {
+		if rmErr := cli.RemoveWorkspace(cfg.Name, cfg); rmErr != nil {
 			fmt.Fprintln(os.Stderr, "cleanup:", rmErr)
 		}
 		fmt.Println("Cleaned up.")
@@ -456,8 +460,8 @@ func childMountRootless(cfg *Config) {
 	must(syscall.Mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, ""), "mount / as private")
 
 	overlay := cfg.Overlay
-	must(setupOverlay(overlay), "setup overlay")
-	defer cleanupOverlay(overlay)
+	must(disk.SetupOverlay(overlay), "setup overlay")
+	defer disk.CleanupOverlay(overlay)
 	out, err := exec.Command(
 		"findmnt",
 		"-T",
@@ -471,29 +475,29 @@ func childMountRootless(cfg *Config) {
 	)
 
 	switch cfg.DeviceMode {
-	case DeviceModeBind:
+	case config.DeviceModeBind:
 		devTarget := filepath.Join(overlay.MergedDir, "dev")
 		fmt.Printf("[child] uid=%d euid=%d gid=%d target=%s\n",
 			os.Getuid(), os.Geteuid(), os.Getgid(), devTarget)
 		must(os.MkdirAll(devTarget, 0755))
 		must(syscall.Mount("/dev", devTarget, "", syscall.MS_BIND|syscall.MS_REC, ""), "mount /dev as bind")
-	case DeviceModeMKNOD:
+	case config.DeviceModeMKNOD:
 		must(os.MkdirAll(filepath.Join(overlay.MergedDir, "dev"), 0755))
-		must(setupDevNodes(filepath.Join(overlay.MergedDir, "dev")), "setupDevNodes")
+		must(container.SetupDevNodes(filepath.Join(overlay.MergedDir, "dev")), "setupDevNodes")
 	}
 
-	lxcfsHandles := setupLxcfs()
+	lxcfsHandles := container.SetupLxcfs()
 
 	// chroot เข้า rootfs
 	must(syscall.Chroot(overlay.MergedDir), "chroot")
 	must(os.Chdir("/"), "chdir")
 
-	must(setupAptRootless(), "setup apt rootless")
+	must(app.SetupAptRootless(), "setup apt rootless")
 
 	must(syscall.Mount("proc", "/proc", "proc", 0, ""), "mount proc")
 	defer syscall.Unmount("/proc", 0)
 
-	mountLxcfs(lxcfsHandles)
+	container.MountLxcfs(lxcfsHandles)
 
 	// mount /dev/pts, /dev/shm แบบขั้นต่ำ (ถ้ายังไม่ทำใน rootfs)
 	os.MkdirAll("/dev/pts", 0755)
@@ -523,11 +527,11 @@ func childMountRootless(cfg *Config) {
 		fmt.Fprintln(os.Stderr, "[child] bash exited with error:", err)
 	}
 
-	unmountLxcfs()
+	container.UnmountLxcfs()
 	syscall.Unmount("/tmp", syscall.MNT_DETACH)
 	syscall.Unmount("/dev/pts", syscall.MNT_DETACH)
 	syscall.Unmount("/dev/shm", syscall.MNT_DETACH)
-	if cfg.DeviceMode == DeviceModeBind {
+	if cfg.DeviceMode == config.DeviceModeBind {
 		syscall.Unmount(filepath.Join(overlay.MergedDir, "dev"), syscall.MNT_DETACH)
 	}
 }
@@ -548,14 +552,4 @@ func isAppArmorRestrictUnprivilegedUsernsEnabled() (bool, error) {
 	default:
 		return false, fmt.Errorf("unexpected value: %q", value)
 	}
-}
-
-func must(err error, name ...string) {
-	if err == nil {
-		return
-	}
-	if len(name) > 0 {
-		panic(fmt.Sprintf("%s: %v", name[0], err))
-	}
-	panic(err)
 }

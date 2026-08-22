@@ -1,7 +1,9 @@
 // disk.go
-package main
+package disk
 
 import (
+	"box/internal/config"
+	"box/internal/namespace"
 	"bytes"
 	"fmt"
 	"os"
@@ -11,7 +13,7 @@ import (
 	"syscall"
 )
 
-const diskSize = "2G"
+type OverlayConfig = config.OverlayConfig
 
 type DiskConfig struct {
 	ImgPath  string
@@ -19,12 +21,14 @@ type DiskConfig struct {
 	LoopDev  string
 }
 
+const diskSize = "2G"
+
 // setupDisk: create and mount disk image, return DiskConfig
-func setupDisk(workspace, name string) (*DiskConfig, error) {
+func SetupDisk(workspace, name string) (*DiskConfig, error) {
 	mountDir := filepath.Join(workspace, name)
 	imgPath := filepath.Join(workspace, name+".img")
 
-	uid, gid := hostIDs()
+	uid, gid := namespace.HostIDs()
 	if err := os.MkdirAll(mountDir, 0755); err != nil {
 		return nil, fmt.Errorf("mkdir mount dir: %w", err)
 	}
@@ -80,7 +84,7 @@ func setupDisk(workspace, name string) (*DiskConfig, error) {
 }
 
 // cleanupDisk: unmount and detach loop device, optionally remove image file
-func cleanupDisk(dc *DiskConfig, removeAfter bool) {
+func CleanupDisk(dc *DiskConfig, removeAfter bool) {
 	fmt.Println("Detaching disk ...")
 
 	// umount -l (lazy unmount)
@@ -186,8 +190,8 @@ func runCmd(name string, args ...string) error {
 	return nil
 }
 
-func setupOverlay(o OverlayConfig) error {
-	uid, gid := hostIDs()
+func SetupOverlay(o OverlayConfig) error {
+	uid, gid := namespace.HostIDs()
 	if err := os.MkdirAll(o.UpperDir, 0755); err != nil {
 		return err
 	}
@@ -228,6 +232,6 @@ func setupOverlay(o OverlayConfig) error {
 	)
 }
 
-func cleanupOverlay(o OverlayConfig) {
+func CleanupOverlay(o OverlayConfig) {
 	syscall.Unmount(o.MergedDir, syscall.MNT_DETACH)
 }

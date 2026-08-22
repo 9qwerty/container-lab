@@ -1,72 +1,17 @@
 // archive.go
-package main
+package archive
 
 import (
 	"archive/tar"
+	"box/internal/container"
 	"compress/gzip"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
-// ---------------------------------------------------------
-// 1. ตรวจ architecture
-// ---------------------------------------------------------
-func detectArch() (string, error) {
-	switch runtime.GOARCH {
-	case "amd64":
-		return "amd64", nil
-	case "arm64":
-		return "arm64", nil
-	default:
-		return "", fmt.Errorf("unsupported architecture: %s", runtime.GOARCH)
-	}
-}
-
-// ---------------------------------------------------------
-// 2. ดาวน์โหลดไฟล์ .tar.gz
-// ---------------------------------------------------------
-func downloadFile(url, destPath string) error {
-	// ถ้ามีไฟล์อยู่แล้ว ข้ามการโหลด (เหมือน script bash เดิมที่เช็ค -f)
-	if _, err := os.Stat(destPath); err == nil {
-		fmt.Println("Rootfs archive already downloaded, skipping.")
-		return nil
-	}
-
-	fmt.Println("Downloading rootfs from", url, "...")
-
-	resp, err := http.Get(url)
-	if err != nil {
-		return fmt.Errorf("http get: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("bad status: %s", resp.Status)
-	}
-
-	out, err := os.Create(destPath)
-	if err != nil {
-		return fmt.Errorf("create file: %w", err)
-	}
-	defer out.Close()
-
-	written, err := io.Copy(out, resp.Body)
-	if err != nil {
-		return fmt.Errorf("write file: %w", err)
-	}
-
-	fmt.Printf("Downloaded %d bytes -> %s\n", written, destPath)
-	return nil
-}
-
-// ---------------------------------------------------------
-// 3. แตกไฟล์ .tar.gz ลงใน rootfsDir
-// ---------------------------------------------------------
-func extractTarGz(archivePath, destDir string) error {
+func ExtractTarGz(archivePath, destDir string) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("open archive: %w", err)
@@ -139,8 +84,8 @@ func extractTarGz(archivePath, destDir string) error {
 			// device node (เช่น /dev/null ที่บางที rootfs archive ก็แพ็คมาด้วย)
 			// os package ไม่มี mknod ตรงๆ ต้องใช้ syscall
 			mode := uint32(hdr.Mode)
-			dev := int(mkdevFromTar(hdr.Devmajor, hdr.Devminor))
-			if err := mknod(targetPath, mode, dev, hdr.Typeflag); err != nil {
+			dev := int(container.MkdevFromTar(hdr.Devmajor, hdr.Devminor))
+			if err := container.Mknod(targetPath, mode, dev, hdr.Typeflag); err != nil {
 				// ส่วนใหญ่ error ตรงนี้ได้เพราะไม่ได้รันเป็น root - ข้ามไปเฉยๆ ก็ได้
 				fmt.Fprintf(os.Stderr, "warn: mknod %s failed: %v\n", targetPath, err)
 			}

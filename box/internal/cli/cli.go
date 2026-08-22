@@ -1,7 +1,8 @@
 // cli.go
-package main
+package cli
 
 import (
+	"box/internal/config"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,42 +10,24 @@ import (
 	"strings"
 )
 
-type DeviceMode int
+type Config = config.Config
+type DeviceMode = config.DeviceMode
+type OverlayConfig = config.OverlayConfig
+type PortMapping = config.PortMapping
 
 const (
-	DeviceModeBind DeviceMode = iota
-	DeviceModeMKNOD
+	DeviceModeBind  = config.DeviceModeBind
+	DeviceModeMKNOD = config.DeviceModeMKNOD
 )
 
-type OverlayConfig struct {
-	LowerDir  string
-	UpperDir  string
-	WorkDir   string
-	MergedDir string
+func getenv(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
-type PortMapping struct {
-	HostPort      int
-	ContainerPort int
-}
-
-type Config struct {
-	IsRoot     bool
-	Workspace  string
-	RootFS     string
-	CGroupDir  string
-	Command    string // "run" | "list" | "rm"
-	Name       string
-	Hostname   string
-	DeviceMode DeviceMode
-	Cleanup    bool // --remove/--rm
-	Remove     bool // สำหรับ command "rm"
-	Ports      []PortMapping
-	InitApp    bool
-	Overlay    OverlayConfig
-}
-
-func help() {
+func Help() {
 	fmt.Println(`Usage: gobox <command> [options]
 
 Commands:
@@ -79,9 +62,9 @@ func getHomeDir() string {
 // ---------------------------------------------------------
 // parseCLI: เทียบเท่า common_cli() ใน bash
 // ---------------------------------------------------------
-func parseCLI(args []string) (*Config, error) {
+func ParseCLI(args []string) (*Config, error) {
 	if len(args) == 0 {
-		help()
+		Help()
 		os.Exit(0)
 	}
 
@@ -107,7 +90,7 @@ func parseCLI(args []string) (*Config, error) {
 
 	switch args[0] {
 	case "-h", "--help":
-		help()
+		Help()
 		os.Exit(0)
 
 	case "list", "ls":
@@ -174,7 +157,7 @@ func parseCLI(args []string) (*Config, error) {
 				i++
 
 			default:
-				help()
+				Help()
 				return nil, fmt.Errorf("unknown option for run: %s", args[i])
 			}
 		}
@@ -203,7 +186,7 @@ func parseCLI(args []string) (*Config, error) {
 		cfg.Remove = true
 
 	default:
-		help()
+		Help()
 		return nil, fmt.Errorf("unknown option: %s", args[0])
 	}
 
@@ -230,7 +213,7 @@ func requireValue(args []string, i int, flagName string) (value string, nextInde
 // ---------------------------------------------------------
 // list_workspace
 // ---------------------------------------------------------
-func listWorkspace(cfg *Config) error {
+func ListWorkspace(cfg *Config) error {
 	fmt.Println("Listing chroots in", cfg.Workspace, "...")
 
 	entries, err := os.ReadDir(cfg.Workspace)
@@ -264,7 +247,7 @@ func listWorkspace(cfg *Config) error {
 // ---------------------------------------------------------
 // remove_workspace (ใช้ตอน command == "rm")
 // ---------------------------------------------------------
-func removeWorkspace(name string, cfg *Config) error {
+func RemoveWorkspace(name string, cfg *Config) error {
 	chrootDir := filepath.Join(cfg.Workspace, name)
 
 	if _, err := os.Stat(chrootDir); os.IsNotExist(err) {

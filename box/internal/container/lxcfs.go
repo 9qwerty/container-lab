@@ -1,5 +1,5 @@
 // lxcfs.go: setup virtualized /proc files from lxcfs on host
-package main
+package container
 
 import (
 	"fmt"
@@ -20,7 +20,7 @@ func isLxcfsAvailable() bool {
 	return err == nil
 }
 
-func setupLxcfs() []lxcfsHandle {
+func SetupLxcfs() []lxcfsHandle {
 	var handles []lxcfsHandle
 
 	if !isLxcfsAvailable() {
@@ -42,7 +42,7 @@ func setupLxcfs() []lxcfsHandle {
 	return handles
 }
 
-func mountLxcfs(handles []lxcfsHandle) {
+func MountLxcfs(handles []lxcfsHandle) {
 	for _, h := range handles {
 		src := fmt.Sprintf("/proc/self/fd/%d", h.fd.Fd())
 		dst := filepath.Join("/proc", h.target)
@@ -54,7 +54,7 @@ func mountLxcfs(handles []lxcfsHandle) {
 	}
 }
 
-func unmountLxcfs() {
+func UnmountLxcfs() {
 	for _, f := range lxcfsProcFiles {
 		syscall.Unmount(filepath.Join("/proc", f), syscall.MNT_DETACH)
 	}

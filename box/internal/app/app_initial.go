@@ -1,29 +1,18 @@
 // app_initial.go
-package main
+package app
 
 import (
+	"box/internal/archive"
+	"box/internal/config"
+	"box/internal/namespace"
 	"fmt"
+	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 )
-
-func hostIDs() (uid, gid int) {
-	uid, gid = os.Getuid(), os.Getgid()
-	if v := os.Getenv("SUDO_UID"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			uid = n
-		}
-	}
-	if v := os.Getenv("SUDO_GID"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			gid = n
-		}
-	}
-	return
-}
 
 func chownRootfs(rootfsDir string, uid, gid int) error {
 	return filepath.WalkDir(rootfsDir, func(path string, d fs.DirEntry, err error) error {
@@ -60,8 +49,8 @@ func setupHostsFile(rootfsDir, hostname string) error {
 	return err
 }
 
-func setupRootfs(arch string, cfg *Config) error {
-	uid, gid := hostIDs()
+func SetupRootfs(arch string, cfg *config.Config) error {
+	uid, gid := namespace.HostIDs()
 	url := fmt.Sprintf(
 		"https://partner-images.canonical.com/oci/jammy/current/ubuntu-jammy-oci-%s-root.tar.gz",
 		arch,
@@ -82,7 +71,7 @@ func setupRootfs(arch string, cfg *Config) error {
 		return fmt.Errorf("chown rootfs : %w", err)
 	}
 
-	if err := extractTarGz(archiveFile, lowerDir); err != nil {
+	if err := archive.ExtractTarGz(archiveFile, lowerDir); err != nil {
 		return fmt.Errorf("extract : %w", err)
 	}
 	if err := chownRootfs(lowerDir, uid, gid); err != nil {
@@ -98,7 +87,7 @@ func setupRootfs(arch string, cfg *Config) error {
 	return nil
 }
 
-func appInitial(env []string) {
+func AppInitial(env []string) {
 	// -------------------------
 	// apt update
 	// -------------------------
@@ -152,8 +141,42 @@ func appInitial(env []string) {
 	}
 }
 
+func downloadFile(url, destPath string) error {
+	// ถ้ามีไฟล์อยู่แล้ว ข้ามการโหลด (เหมือน script bash เดิมที่เช็ค -f)
+	if _, err := os.Stat(destPath); err == nil {
+		fmt.Println("Rootfs archive already downloaded, skipping.")
+		return nil
+	}
+
+	fmt.Println("Downloading rootfs from", url, "...")
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("http get: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad status: %s", resp.Status)
+	}
+
+	out, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("create file: %w", err)
+	}
+	defer out.Close()
+
+	written, err := io.Copy(out, resp.Body)
+	if err != nil {
+		return fmt.Errorf("write file: %w", err)
+	}
+
+	fmt.Printf("Downloaded %d bytes -> %s\n", written, destPath)
+	return nil
+}
+
 // apt -o APT::Sandbox::User=root update
-func setupAptRootless() error {
+func SetupAptRootless() error {
 	const path = "/etc/apt/apt.conf.d/99-rootless"
 	const content = `APT::Sandbox::User "root";`
 

@@ -1,13 +1,19 @@
 // network.go
-package main
+package container
 
 import (
+	"box/internal/config"
+	"box/internal/namespace"
 	"fmt"
 	"hash/fnv"
 	"os/exec"
 	"strconv"
 	"strings"
 )
+
+type PortMapping = config.PortMapping
+
+var must = namespace.Must
 
 type NetConfig struct {
 	VethHost string
@@ -20,7 +26,7 @@ type NetConfig struct {
 }
 
 // deriveNetConfig
-func deriveNetConfig(name string) (*NetConfig, error) {
+func DeriveNetConfig(name string) (*NetConfig, error) {
 	h := fnv.New32a()
 	h.Write([]byte(name))
 	idx := (h.Sum32() % 250) + 2 // กัน .0 กับ .1
@@ -76,7 +82,7 @@ func splitFields(s string) []string {
 }
 
 // setupNetwork: สร้าง veth pair, bridge, ยัดปลายหนึ่งเข้า netns ของ pid
-func setupNetwork(nc *NetConfig, pid int) error {
+func SetupNetwork(nc *NetConfig, pid int) error {
 	// ลบเผื่อค้างจาก run ก่อนหน้า
 	run("ip", "link", "del", nc.VethHost)
 
@@ -126,7 +132,7 @@ func setupNetwork(nc *NetConfig, pid int) error {
 	return nil
 }
 
-func cleanupNetwork(nc *NetConfig) {
+func CleanupNetwork(nc *NetConfig) {
 	run("ip", "link", "del", nc.VethHost)
 	run("iptables", "-t", "nat", "-D", "POSTROUTING", "-s", nc.Subnet, "-o", nc.OutIf, "-j", "MASQUERADE")
 	run("ip", "addr", "del", nc.BridgeIP+"/24", "dev", nc.Bridge)
@@ -186,7 +192,7 @@ func validatePortAvailable(hostPort int, nsIP string) error {
 
 // exposePorts: setup DNAT rules ให้ทุก port mapping
 // เทียบเท่า loop "for mapping in ${PORTS[@]}" ใน setup_ns() เดิม
-func exposePorts(ports []PortMapping, nc *NetConfig) error {
+func ExposePorts(ports []PortMapping, nc *NetConfig) error {
 
 	run("sysctl", "-w", "net.ipv4.conf.all.route_localnet=1")
 	run("sysctl", "-w", "net.ipv4.conf.lo.route_localnet=1")
@@ -250,7 +256,7 @@ func exposePorts(ports []PortMapping, nc *NetConfig) error {
 }
 
 // cleanupPorts: ลบ DNAT rules ทั้งหมด (เรียกตอน container exit)
-func cleanupPorts(ports []PortMapping, nc *NetConfig) {
+func CleanupPorts(ports []PortMapping, nc *NetConfig) {
 	for _, pm := range ports {
 		dest := fmt.Sprintf("%s:%d", nc.NSIP, pm.ContainerPort)
 		hostPortStr := strconv.Itoa(pm.HostPort)

@@ -1,4 +1,4 @@
-package main
+package container
 
 import (
 	"fmt"
@@ -8,7 +8,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func setupDevNodes(rootDev string) error {
+func SetupDevNodes(rootDev string) error {
 	nodes := []struct {
 		name         string
 		major, minor int64
@@ -29,7 +29,7 @@ func setupDevNodes(rootDev string) error {
 		} else if !os.IsNotExist(err) {
 			return fmt.Errorf("stat %s: %w", n.name, err)
 		}
-		dev := int(mkdevFromTar(n.major, n.minor))
+		dev := int(MkdevFromTar(n.major, n.minor))
 		if err := unix.Mknod(path, unix.S_IFCHR|n.mode, dev); err != nil {
 			return fmt.Errorf("mknod %s: %w", n.name, err)
 		}

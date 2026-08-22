@@ -1,5 +1,5 @@
 // cgroup.go
-package main
+package container
 
 import (
 	"fmt"
@@ -15,7 +15,7 @@ func enableCpusetController() error {
 	return os.WriteFile("/sys/fs/cgroup/cgroup.subtree_control", []byte("+cpuset"), 0644)
 }
 
-func setupCgroupSkeleton(cgroupDir string) error {
+func SetupCgroupSkeleton(cgroupDir string) error {
 	if err := enableCpusetController(); err != nil {
 		fmt.Fprintln(os.Stderr, "[cgroup] warn: enable cpuset failed:", err)
 	}
@@ -39,11 +39,11 @@ func setupCgroupSkeleton(cgroupDir string) error {
 	return nil
 }
 
-func addToCgroupBackup(pid int, cgroupDir string) error {
+func AddToCgroupBackup(pid int, cgroupDir string) error {
 	return os.WriteFile(cgroupDir+"/cgroup.procs", []byte(strconv.Itoa(pid)), 0644)
 }
 
-func addToCgroup(pid int, cgroupDir string) error {
+func AddToCgroup(pid int, cgroupDir string) error {
 	path := filepath.Join(cgroupDir, "cgroup.procs")
 
 	if err := os.WriteFile(path, []byte(strconv.Itoa(pid)), 0644); err != nil {
@@ -60,7 +60,7 @@ func addToCgroup(pid int, cgroupDir string) error {
 	return nil
 }
 
-func cleanupCgroup(cgroupDir string) {
+func CleanupCgroup(cgroupDir string) {
 	if err := os.Remove(cgroupDir); err != nil {
 		fmt.Println("cleanup cgroup:", err)
 	}

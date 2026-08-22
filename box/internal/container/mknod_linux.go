@@ -1,13 +1,13 @@
 // mknod_linux.go
-package main
+package container
 
 import "golang.org/x/sys/unix"
 
-func mkdevFromTar(major, minor int64) uint64 {
+func MkdevFromTar(major, minor int64) uint64 {
 	return unix.Mkdev(uint32(major), uint32(minor))
 }
 
-func mknod(path string, mode uint32, dev int, typeflag byte) error {
+func Mknod(path string, mode uint32, dev int, typeflag byte) error {
 	var m uint32 = mode
 	switch typeflag {
 	case '3': // char device (tar.TypeChar)
