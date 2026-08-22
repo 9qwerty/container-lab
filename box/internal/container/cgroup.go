@@ -65,3 +65,36 @@ func CleanupCgroup(cgroupDir string) {
 		fmt.Println("cleanup cgroup:", err)
 	}
 }
+
+// container/cgroup_rootless.go
+func RootlessCgroupBase() (string, error) {
+	uid := os.Getuid()
+	base := fmt.Sprintf(
+		"/sys/fs/cgroup/user.slice/user-%d.slice/user@%d.service",
+		uid, uid,
+	)
+	if _, err := os.Stat(filepath.Join(base, "cgroup.controllers")); err != nil {
+		return "", fmt.Errorf("delegated cgroup not found at %s (is user@%d.service running? try: loginctl enable-linger %s): %w",
+			base, uid, os.Getenv("USER"), err)
+	}
+	return base, nil
+}
+
+func SetupCgroupSkeletonRootless(name string) (string, error) {
+	base, err := RootlessCgroupBase()
+	if err != nil {
+		return "", err
+	}
+	// ต้องเปิด controller ที่ระดับ parent ก่อนถึงจะสร้าง subgroup แล้วตั้ง limit ได้
+	if err := os.WriteFile(
+		filepath.Join(base, "cgroup.subtree_control"),
+		[]byte("+cpu +memory +pids"), 0644,
+	); err != nil {
+		return "", fmt.Errorf("enable delegated controllers: %w", err)
+	}
+	dir := filepath.Join(base, "gobox-"+name)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+	return dir, nil
+}

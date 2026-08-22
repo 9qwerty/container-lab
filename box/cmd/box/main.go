@@ -375,6 +375,9 @@ func runContainerRootless(cfg *Config) {
 	must(errArch, "detect arch")
 	must(app.SetupRootfs(arch, cfg), "setup rootfs")
 
+	cgroupDir, errCg := container.SetupCgroupSkeletonRootless(cfg.Name)
+	must(errCg, "setup rootless cgroup skeleton")
+
 	configData, errConfigData := json.Marshal(cfg)
 	must(errConfigData, "marshal config")
 
@@ -443,6 +446,11 @@ func runContainerRootless(cfg *Config) {
 	).Run(), "newgidmap")
 
 	// ---------------------------------------
+	// CGroup
+	// ---------------------------------------
+	must(container.AddToCgroup(pid, cgroupDir), "add cgroup (rootless)")
+
+	// ---------------------------------------
 	// Release child
 	// ---------------------------------------
 	if _, err := syncW.Write([]byte{1}); err != nil {
@@ -458,6 +466,7 @@ func runContainerRootless(cfg *Config) {
 	// Wait
 	// ---------------------------------------
 	err := cmd.Wait()
+	container.CleanupCgroup(cgroupDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "child exited:", err)
 	}
@@ -554,6 +563,10 @@ func childMountRootless(cfg *Config) {
 	}
 
 	env := []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "TERM=xterm"}
+
+	if cfg.InitApp == true {
+		app.AppInitial(env)
+	}
 
 	// -------------------------
 	// bash
