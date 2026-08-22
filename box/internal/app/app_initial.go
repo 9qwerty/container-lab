@@ -175,6 +175,32 @@ func downloadFile(url, destPath string) error {
 	return nil
 }
 
+func CheckSubuidTools() {
+	tools := []string{"newuidmap", "newgidmap"}
+
+	for _, tool := range tools {
+		path, err := exec.LookPath(tool)
+		if err == nil {
+			fmt.Printf("Found %s at %s\n", tool, path)
+			continue
+		}
+		fmt.Printf("ERROR: %s not found\n\n", tool)
+		fmt.Println("Install it with:")
+
+		fmt.Println("  Debian / Ubuntu:")
+		fmt.Println("    sudo apt install uidmap")
+
+		fmt.Println("  RHEL / CentOS / Rocky / AlmaLinux:")
+		fmt.Println("    sudo dnf install shadow-utils")
+
+		fmt.Println("  Arch Linux:")
+		fmt.Println("    sudo pacman -S shadow")
+
+		os.Exit(1)
+
+	}
+}
+
 // apt -o APT::Sandbox::User=root update
 func SetupAptRootless() error {
 	const path = "/etc/apt/apt.conf.d/99-rootless"

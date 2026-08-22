@@ -43,6 +43,7 @@ Options for 'run':
   --port, -p <mapping>    Expose port, format HOST:CONTAINER or PORT
   --mount-mode <mode>     Set the mount mode (default: bind)
   --init                  Initialize the chroot with an application
+  --apt                   Use apt as the package manager
 
 Examples:
   gobox run
@@ -81,6 +82,7 @@ func ParseCLI(args []string) (*Config, error) {
 	cfg.Remove = false
 	cfg.CGroupDir = "/sys/fs/cgroup/gobox"
 	cfg.InitApp = false
+	cfg.Apt = false
 	if os.Getuid() == 0 {
 		cfg.IsRoot = true
 	} else {
@@ -154,6 +156,9 @@ func ParseCLI(args []string) (*Config, error) {
 				i = next
 			case "--init":
 				cfg.InitApp = true
+				i++
+			case "--apt":
+				cfg.Apt = true
 				i++
 
 			default:

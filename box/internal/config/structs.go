@@ -32,5 +32,6 @@ type Config struct {
 	Remove     bool // สำหรับ command "rm"
 	Ports      []PortMapping
 	InitApp    bool
+	Apt        bool
 	Overlay    OverlayConfig
 }

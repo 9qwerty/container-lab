@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -62,7 +63,30 @@ func main() {
 		os.Exit(0)
 	}
 
-	if os.Args[1] == "child" {
+	switch os.Args[1] {
+	case "reexec":
+		var cfg Config
+		configData := os.Getenv("CDATA")
+		json.Unmarshal([]byte(configData), &cfg)
+
+		sync := os.NewFile(3, "sync")
+		buf := make([]byte, 1)
+		if _, err := sync.Read(buf); err != nil {
+			fmt.Fprintln(os.Stderr, "child: sync read:", err)
+			os.Exit(1)
+		}
+		sync.Close()
+
+		// ★ important: re-exec to get full capabilities back from uid=0 legacy rule
+		exe, err := os.Executable()
+		if err != nil {
+			exe = "/proc/self/exe"
+		}
+		env := append(os.Environ(), "CDATA="+configData)
+		must(syscall.Exec(exe, []string{exe, "child"}, env), "reexec child")
+		return
+
+	case "child":
 		var cfg Config
 		configData := os.Getenv("CDATA")
 		if configData == "" {
@@ -75,6 +99,7 @@ func main() {
 		}
 		child(&cfg)
 		return
+
 	}
 
 	cfg, err := cli.ParseCLI(os.Args[1:])
@@ -90,8 +115,10 @@ func main() {
 		must(cli.RemoveWorkspace(cfg.Name, cfg), "remove workspace")
 	case "run":
 		if cfg.IsRoot {
+			fmt.Println("::Root::")
 			runContainer(cfg)
 		} else {
+			fmt.Println("::Rootless::")
 			runContainerRootless(cfg)
 		}
 	}
@@ -354,7 +381,7 @@ func runContainerRootless(cfg *Config) {
 	syncR, syncW, errPipe := os.Pipe()
 	must(errPipe, "create sync pipe")
 
-	cmd := exec.Command("/proc/self/exe", "child")
+	cmd := exec.Command("/proc/self/exe", "reexec")
 	cmd.ExtraFiles = []*os.File{syncR}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -378,13 +405,13 @@ func runContainerRootless(cfg *Config) {
 
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: cloneConfig.CloneFlags(),
-		UidMappings: []syscall.SysProcIDMap{
-			{ContainerID: 0, HostID: hUID, Size: 1},
-		},
-		GidMappings: []syscall.SysProcIDMap{
-			{ContainerID: 0, HostID: hGID, Size: 1},
-		},
-		GidMappingsEnableSetgroups: false,
+		// UidMappings: []syscall.SysProcIDMap{
+		// 	{ContainerID: 0, HostID: hUID, Size: 1},
+		// },
+		// GidMappings: []syscall.SysProcIDMap{
+		// 	{ContainerID: 0, HostID: hGID, Size: 1},
+		// },
+		// GidMappingsEnableSetgroups: false,
 	}
 
 	fmt.Println("host uid:", hUID)
@@ -402,6 +429,18 @@ func runContainerRootless(cfg *Config) {
 
 	pid := cmd.Process.Pid
 	fmt.Println("child pid:", pid)
+
+	app.CheckSubuidTools()
+
+	must(exec.Command("newuidmap", strconv.Itoa(pid),
+		"0", strconv.Itoa(hUID), "1",
+		"1", "100000", "65536",
+	).Run(), "newuidmap")
+
+	must(exec.Command("newgidmap", strconv.Itoa(pid),
+		"0", strconv.Itoa(hGID), "1",
+		"1", "100000", "65536",
+	).Run(), "newgidmap")
 
 	// ---------------------------------------
 	// Release child
@@ -492,7 +531,9 @@ func childMountRootless(cfg *Config) {
 	must(syscall.Chroot(overlay.MergedDir), "chroot")
 	must(os.Chdir("/"), "chdir")
 
-	must(app.SetupAptRootless(), "setup apt rootless")
+	if cfg.Apt {
+		must(app.SetupAptRootless(), "setup apt rootless")
+	}
 
 	must(syscall.Mount("proc", "/proc", "proc", 0, ""), "mount proc")
 	defer syscall.Unmount("/proc", 0)
