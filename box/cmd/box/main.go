@@ -118,6 +118,12 @@ func main() {
 			fmt.Println("::Root::")
 			runContainer(cfg)
 		} else {
+			linger := container.CheckLinger()
+			if linger != nil {
+				fmt.Fprintln(os.Stderr, "Error:", linger)
+			}
+			container.EnsureInDelegatedCgroup()
+			// must(container.SelfMigrateToDelegated(), "self migrate to delegated cgroup")
 			fmt.Println("::Rootless::")
 			runContainerRootless(cfg)
 		}
@@ -376,6 +382,7 @@ func runContainerRootless(cfg *Config) {
 	must(app.SetupRootfs(arch, cfg), "setup rootfs")
 
 	cgroupDir, errCg := container.SetupCgroupSkeletonRootless(cfg.Name)
+	fmt.Println("cgroupDir:", cgroupDir)
 	must(errCg, "setup rootless cgroup skeleton")
 
 	configData, errConfigData := json.Marshal(cfg)
